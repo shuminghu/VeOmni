@@ -105,10 +105,13 @@ def make_test(args, tokenizer) -> None:
             "cell",
         )
     }
-    cells = list(itertools.product(args.ctx_lens, args.n_copies, args.placements, args.template_splits))
+    # noise_size is the outer loop so the noise_size=1 cells keep their seeds when other sizes are added.
+    cells = list(
+        itertools.product(args.noise_sizes, args.ctx_lens, args.n_copies, args.placements, args.template_splits)
+    )
     seed = TEST_SEED_BASE
-    for ctx_len, n_copy, placement, template_split in cells:
-        cell = f"L{ctx_len}_n{n_copy}_{placement}_{template_split}"
+    for noise_size, ctx_len, n_copy, placement, template_split in cells:
+        cell = f"L{ctx_len}_n{n_copy}_{placement}_{template_split}" + (f"_k{noise_size}" if noise_size > 1 else "")
         for _ in range(args.num_per_cell):
             recipe = SelectiveCopyRecipe(
                 seed=seed,
@@ -118,7 +121,7 @@ def make_test(args, tokenizer) -> None:
                 template_split=template_split,
                 fmt=args.fmt,
                 content_size=args.content_size,
-                noise_size=args.noise_size,
+                noise_size=noise_size,
             )
             template_id, positions, content = task.sample_layout(recipe, np.random.default_rng(seed))
             for key, value in (
@@ -131,7 +134,7 @@ def make_test(args, tokenizer) -> None:
                 ("template_id", template_id),
                 ("fmt", args.fmt),
                 ("content_size", args.content_size),
-                ("noise_size", args.noise_size),
+                ("noise_size", noise_size),
                 ("body_positions", positions.tolist()),
                 ("content", content.tolist()),
                 ("cell", cell),
@@ -150,7 +153,7 @@ def main():
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--fmt", default="nl", choices=["nl", "raw"])
     parser.add_argument("--content_size", type=int, default=2048)
-    parser.add_argument("--noise_size", type=int, default=1)
+    parser.add_argument("--noise_size", type=int, default=1, help="Train only; test uses --noise_sizes.")
     # train
     parser.add_argument("--max_seq_len", type=int, default=4096)
     parser.add_argument("--num_samples", type=int, default=4_000_000)
@@ -165,6 +168,9 @@ def main():
     parser.add_argument("--placements", nargs="+", default=["uniform", "early"])
     parser.add_argument("--template_splits", nargs="+", default=["test"])
     parser.add_argument("--num_per_cell", type=int, default=128)
+    parser.add_argument(
+        "--noise_sizes", type=int, nargs="+", default=[1], help="1: filler is ' .'; k>1: k filler words."
+    )
     args = parser.parse_args()
 
     args.out_dir = os.path.expanduser(args.out_dir)

@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--labels", nargs="+", default=None)
     parser.add_argument("--train_len", type=int, default=None, help="Draw a marker at the training length.")
     parser.add_argument("--placement", default="uniform")
+    parser.add_argument("--noise_size", type=int, default=1)
     parser.add_argument(
         "--metric", default="token_acc", choices=["token_acc", "first_item_acc", "exact", "answer_nll"]
     )
@@ -39,11 +40,20 @@ def main():
         for res, label in zip(results, labels):
             curve = defaultdict(list)
             for c in res.get("selective_copy", {}).get("cells", []):
-                if c["n_copy"] == n_copy and c["placement"] == args.placement:
+                if (
+                    c["n_copy"] == n_copy
+                    and c["placement"] == args.placement
+                    and c.get("noise_size", 1) == args.noise_size
+                ):
                     curve[c["ctx_len"]].append(c[args.metric])
             xs = sorted(curve)
             ax.plot(xs, [sum(curve[x]) / len(curve[x]) for x in xs], marker="o", label=label)
-        ax.set(xscale="log", xlabel="body length L", ylabel=args.metric, title=f"selective copy, n_copy={n_copy}")
+        ax.set(
+            xscale="log",
+            xlabel="body length L",
+            ylabel=args.metric,
+            title=f"selective copy, n_copy={n_copy}, noise k={args.noise_size}",
+        )
         if args.train_len:
             ax.axvline(args.train_len, color="gray", linestyle="--", linewidth=1)
 

@@ -152,6 +152,7 @@ def eval_selective_copy(scorer, tokenizer, test_dir, rank, world_size, max_token
                 {
                     "cell": rows[i]["cell"],
                     **{k: sample.meta[k] for k in ("ctx_len", "n_copy", "placement", "template_split", "template_id")},
+                    "noise_size": int(rows[i].get("noise_size") or 1),
                     "seq_len": len(sample.input_ids),
                     "answer_nll": answer_nll,
                     **result,
@@ -165,12 +166,17 @@ def aggregate_selective_copy(records: list) -> dict:
     for r in records:
         cells[r["cell"]].append(r)
     cell_summary = []
-    for cell, rs in sorted(cells.items(), key=lambda kv: (kv[1][0]["ctx_len"], kv[1][0]["n_copy"], kv[0])):
+
+    def cell_order(kv):
+        first = kv[1][0]
+        return first["noise_size"], first["ctx_len"], first["n_copy"], kv[0]
+
+    for cell, rs in sorted(cells.items(), key=cell_order):
         first = rs[0]
         cell_summary.append(
             {
                 "cell": cell,
-                **{k: first[k] for k in ("ctx_len", "n_copy", "placement", "template_split")},
+                **{k: first[k] for k in ("ctx_len", "n_copy", "placement", "template_split", "noise_size")},
                 "n": len(rs),
                 "token_acc": float(np.mean([r["token_acc"] for r in rs])),
                 # Teacher forcing lets items k>0 be found by induction from item k-1; item 0 is pure retrieval.
@@ -186,8 +192,9 @@ def aggregate_selective_copy(records: list) -> dict:
     for r in records:
         if r["placement"] != "uniform":
             continue
+        key = f"L{r['ctx_len']}_n{r['n_copy']}" + (f"_k{r['noise_size']}" if r["noise_size"] > 1 else "")
         for correct, distance in zip(r["item_correct"], r["distances"]):
-            by_distance[f"L{r['ctx_len']}_n{r['n_copy']}"][log2_bin(distance)].append(correct)
+            by_distance[key][log2_bin(distance)].append(correct)
     distance_summary = {
         key: {str(2**b): {"acc": float(np.mean(v)), "n": len(v)} for b, v in sorted(bins.items())}
         for key, bins in by_distance.items()
@@ -296,7 +303,10 @@ def main():
                 for r in records:
                     f.write(json.dumps(r) + "\n")
         for cell in results.get("selective_copy", {}).get("cells", []):
-            print(f"{cell['cell']:<32} acc={cell['token_acc']:.3f} exact={cell['exact']:.3f} n={cell['n']}")
+            print(
+                f"{cell['cell']:<36} acc={cell['token_acc']:.3f} first={cell['first_item_acc']:.3f} "
+                f"exact={cell['exact']:.3f} n={cell['n']}"
+            )
         for seq_len, r in results.get("position_nll", {}).items():
             curve = " ".join(f"{b['start']}:{b['nll']:.2f}" for b in r["log2_bins"])
             print(f"NLL L={seq_len} ({r['num_docs']} docs): {curve}")
