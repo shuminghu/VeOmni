@@ -166,6 +166,16 @@ own `safetensor_idx_path`.
 | ep_sharded_stream_load | `bool` | `False` | Opt-in fast/low-memory MoE loader: each rank reads only its ExtraParallel dim-0 slice from the checkpoint (for an HF per-expert MoE checkpoint, only its own experts' tensors, when the model's checkpoint converter supports it, e.g. Qwen3-MoE / Qwen3.5-MoE / DeepSeek-V3 / GLM-5 / DeepSeek-V4, including DeepSeek-V4's FP4/FP8 experts). Requires `broadcast_model_weights_from_rank0=False` and a model with an ExtraParallel parallel_plan. |
 | optimizer | `OptimizerConfig` | — | Optimizer and learning-rate schedule for this model. |
 | accelerator | `AcceleratorConfig` | — | Parallelism, sharding, and placement for this model. |
+| init | `InitConfig` | — | Parameter initialization for from-scratch runs. See below. |
+
+`model.init.*` applies only when no weights are loaded (`model_path` unset, not resuming):
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| scheme | `Literal["default", "mup"]` | `"default"` | `default`: the model's HF `_init_weights`. `mup`: input embedding `N(0, embedding_std²)`; hidden `nn.Linear` spectral init `hidden_std / sqrt(fan_in) · min(1, sqrt(fan_out/fan_in))`; `lm_head` `N(0, (unembedding_std/fan_in)²)`; biases zero; norms untouched. Needs `tie_word_embeddings: false`. Pairs with `muon_adjust_lr_fn: spectral`. |
+| embedding_std | `float` | `1.0` | muP input-embedding std. |
+| hidden_std | `float` | `1.0` | Multiplier on the hidden-weight spectral std. |
+| unembedding_std | `float` | `1.0` | Multiplier on the `1/fan_in` `lm_head` std. |
 
 `processor_config` is to the preprocessor what `model_config` is to the architecture: its keys are forwarded to `AutoProcessor.from_pretrained`, overriding what the checkpoint ships. Leave it empty and the repository's own `preprocessor_config.json` is authoritative. Pixel budgets belong in `data.mm_configs`.
 
@@ -403,7 +413,7 @@ group or learning rate is therefore a recipe choice beyond the reference, not a 
 | eval_path | `Optional[str]` | `None` | Path of the evaluation dataset. |
 | train_size | `int` | `10_000_000` | Number of tokens for training (used to compute steps under dynamic batch). |
 | train_sample | `int` | `10_000` | Number of samples for training (used to compute steps under non-dynamic batch). |
-| data_type | `Literal["plaintext", "conversation", "diffusion", "classification", "dpo"]` | `"conversation"` | Type of the training data. |
+| data_type | `Literal["plaintext", "pretrain_mix", "conversation", "diffusion", "classification", "dpo"]` | `"conversation"` | Type of the training data. `pretrain_mix`: plaintext rows plus synthetic-task recipe rows (rows with a `task` field, see `veomni/data/synthetic`). |
 | datasets_type | `str` | `"mapping"` | Single-source builder for a non-YAML `train_path`. Built-in values: `"mapping"`, `"iterable"`. |
 | dataset_repeat | `bool` | `false` | Iterable-only. If true, replay the stream so one epoch can reach `train.max_steps` when the dump is shorter than that cap. If false, one pass ends the epoch. Each pass drops the last incomplete DP round. Mapping ignores this. |
 | multisource_datasets_type | `str` | `"interleave"` | Dataset builder when `train_path` is a YAML. Built-in value: `"interleave"`. |
@@ -496,14 +506,14 @@ The default `mode=None` follows TorchTitan's main path by using the `inductor` b
 | max_grad_norm | `float` | `1.0` | Gradient clipping norm. |
 | grad_clip_scope | `Literal["per_module", "global"]` | `"per_module"` | Which parameters `max_grad_norm` is computed over. `"per_module"` clips each module against its own norm; `"global"` would clip every module against one norm taken across all of them, but is not implemented yet and raises `NotImplementedError`. A single-model job has one module, so the two agree and only an omni model would see a difference. |
 | betas | `Tuple[float, float]` | `(0.9, 0.95)` | AdamW betas (`beta1`, `beta2`). |
-| muon_lr | `Optional[float]` | `None` | Learning rate for Muon-managed 2-D/3-D weights. Unset: inherits `lr` under `match_rms_adamw`, else `25×lr` under `original`. |
+| muon_lr | `Optional[float]` | `None` | Learning rate for Muon-managed 2-D/3-D weights. Unset: inherits `lr` under `match_rms_adamw` / `spectral`, else `25×lr` under `original`. |
 | muon_momentum | `float` | `0.95` | Momentum factor for Muon. |
 | muon_nesterov | `bool` | `True` | Enable Nesterov momentum for Muon. |
 | muon_weight_decay | `float` | `0.0` | Decoupled weight decay for Muon parameter groups. |
 | muon_ns_steps | `int` | `5` | Number of Newton–Schulz iterations. |
-| muon_ns_coefficients | `List[float]` | `[3.4445, -4.7750, 2.0315]` | Quintic Newton–Schulz polynomial coefficients. |
+| muon_ns_coefficients | `List[float]` | `[3.4445, -4.7750, 2.0315]` | Quintic Newton–Schulz polynomial coefficients: one `(a, b, c)` for every step, or a per-step schedule `[[a1, b1, c1], ...]` whose length overrides `muon_ns_steps`. |
 | muon_eps | `float` | `1e-7` | Numerical-stability epsilon used in spectral-norm normalization. |
-| muon_adjust_lr_fn | `Literal["original", "match_rms_adamw"]` | `"match_rms_adamw"` | Per-matrix learning-rate adjustment strategy. |
+| muon_adjust_lr_fn | `Literal["original", "match_rms_adamw", "spectral"]` | `"match_rms_adamw"` | Per-matrix learning-rate adjustment: `original` `sqrt(max(1, d_out/d_in))`, `match_rms_adamw` `0.2·sqrt(max(d_out, d_in))`, `spectral` `sqrt(d_out/d_in)` (spectral muP). |
 | muon_head_group_size | `int` | `0` | Attention heads per Newton–Schulz block ("Muon Split"). `0` orthogonalizes each projection as one matrix, `1` is per-head, `g>1` groups `g` heads. Any value `>= 1` requires `muon_head_split_modules`. |
 | muon_head_split_modules | `List[str]` | `[]` | Projections to head-split, each a leaf module name or a dotted path suffix, e.g. `[self_attn.q_b_proj]`. An entry that would split two *nested* projections is rejected with the qualified names to use instead. No default — required when `muon_head_group_size >= 1`. |
 | muon_expert_zero_comm | `bool` | `False` | Use whole-expert `Shard(0)` when the FSDP+ExtraParallel topology permits zero-communication expert Muon updates. |

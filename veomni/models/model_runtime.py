@@ -486,6 +486,19 @@ class VeOmniModelRuntime:
             **kwargs,
         )
         self.model.train()
+        self._apply_init_scheme(skip_hf_weight_load)
+
+    def _apply_init_scheme(self, resuming: bool) -> None:
+        """Override the HF random init for from-scratch runs (``model.init.scheme``)."""
+        if self.args.init.scheme == "default":
+            return
+        if self.weights_path is not None or resuming:
+            logger.info_rank0(f"model.init.scheme={self.args.init.scheme} ignored: weights are loaded, not random.")
+            return
+        if self.args.init.scheme == "mup":
+            from .initialization import apply_mup_init
+
+            apply_mup_init(self.model, self.args.init)
 
     def _setup_lora(self) -> None:
         """Wrap :attr:`model` with the PEFT-free :class:`veomni.lora.VeOmniLoraModel`.

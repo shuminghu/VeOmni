@@ -77,6 +77,29 @@ def _resolve_hdfs_path(path: Optional[str]) -> Optional[str]:
 
 
 @dataclass
+class InitConfig:
+    """model.init.* — Parameter initialization for from-scratch (random-init) runs.
+
+    Only applied when no pretrained weights are loaded and the run is not resuming from a checkpoint.
+    """
+
+    scheme: Literal["default", "mup"] = field(
+        default="default",
+        metadata={
+            "help": (
+                "'default': the model's own HF ``_init_weights``. 'mup': width-aware init -- input embedding "
+                "N(0, embedding_std^2); hidden nn.Linear weights spectral init "
+                "hidden_std / sqrt(fan_in) * min(1, sqrt(fan_out / fan_in)); output embedding (lm_head) "
+                "N(0, (unembedding_std / fan_in)^2); biases zero; norms untouched. Requires untied embeddings."
+            )
+        },
+    )
+    embedding_std: float = field(default=1.0, metadata={"help": "muP input-embedding std (width independent)."})
+    hidden_std: float = field(default=1.0, metadata={"help": "muP multiplier on the hidden-weight spectral std."})
+    unembedding_std: float = field(default=1.0, metadata={"help": "muP multiplier on the 1/fan_in lm_head std."})
+
+
+@dataclass
 class OptimizerConfig:
     """model.optimizer.* — Optimizer and learning-rate schedule.
 
@@ -152,7 +175,7 @@ class OptimizerConfig:
             "help": (
                 "Learning rate for the Muon group (2D hidden weights and 3D expert stacks). "
                 "If unset: inherits model.optimizer.lr when muon_adjust_lr_fn=match_rms_adamw "
-                "(default); uses 25x model.optimizer.lr when muon_adjust_lr_fn=original "
+                "(default) or spectral; uses 25x model.optimizer.lr when muon_adjust_lr_fn=original "
                 "(Moonlight-style starting point)."
             )
         },
@@ -175,19 +198,25 @@ class OptimizerConfig:
     )
     muon_ns_coefficients: List[float] = field(
         default_factory=lambda: [3.4445, -4.7750, 2.0315],
-        metadata={"help": "Quintic Newton-Schulz polynomial coefficients (a, b, c)."},
+        metadata={
+            "help": (
+                "Quintic Newton-Schulz polynomial coefficients: one (a, b, c) reused for every step, or a "
+                "per-step schedule [[a1, b1, c1], ...] (its length overrides muon_ns_steps)."
+            )
+        },
     )
     muon_eps: float = field(
         default=1e-7,
         metadata={"help": "Numerical-stability epsilon for the spectral-norm normalization in Muon."},
     )
-    muon_adjust_lr_fn: Literal["original", "match_rms_adamw"] = field(
+    muon_adjust_lr_fn: Literal["original", "match_rms_adamw", "spectral"] = field(
         default="match_rms_adamw",
         metadata={
             "help": (
                 "Per-matrix learning-rate adjustment used by Muon. "
-                "'original' follows Keller Jordan; 'match_rms_adamw' (default) "
-                "matches the RMS of an AdamW update so AdamW-tuned hyperparams transfer."
+                "'original' follows Keller Jordan (sqrt(max(1, d_out/d_in))); 'match_rms_adamw' (default) "
+                "matches the RMS of an AdamW update so AdamW-tuned hyperparams transfer; "
+                "'spectral' scales by sqrt(d_out/d_in) (spectral muP), so muon_lr transfers across widths."
             )
         },
     )
@@ -1862,6 +1891,7 @@ class ModelArguments(BaseModelArguments):
     )
     accelerator: AcceleratorConfig = field(default_factory=AcceleratorConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    init: InitConfig = field(default_factory=InitConfig)
 
     def __post_init__(self):
         super().__post_init__()

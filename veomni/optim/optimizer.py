@@ -619,12 +619,12 @@ def _build_muon_with_adamw(
             "e.g. ['self_attn.q_b_proj'] for DeepSeek V4/V3 MLA up-projections or "
             "['q_proj', 'k_proj', 'v_proj'] for GQA attention."
         )
-    # The single owner of the Muon-vs-AdamW LR policy: an unset Muon LR either
-    # inherits the AdamW LR (match_rms_adamw) or takes the Moonlight-style 25x.
+    # The single owner of the Muon-vs-AdamW LR policy: an unset Muon LR inherits the
+    # AdamW LR unchanged (match_rms_adamw, spectral) or takes the Moonlight-style 25x (original).
     muon_lr_explicit = muon_kwargs.get("lr") is not None
     if not muon_lr_explicit:
         adjust_lr_fn = muon_kwargs.get("adjust_lr_fn", "match_rms_adamw")
-        muon_kwargs["lr"] = adamw_lr if adjust_lr_fn == "match_rms_adamw" else 25.0 * adamw_lr
+        muon_kwargs["lr"] = 25.0 * adamw_lr if adjust_lr_fn == "original" else adamw_lr
     muon_params, adamw_params, muon_names, adamw_names = split_muon_adamw_params(
         model,
         no_decay_modules=no_decay_modules,
@@ -684,9 +684,7 @@ def _build_muon_with_adamw(
         "explicit"
         if muon_lr_explicit
         else (
-            "inherit optimizer.lr (match_rms_adamw)"
-            if adjust_lr_fn == "match_rms_adamw"
-            else "25x optimizer.lr (original)"
+            f"inherit optimizer.lr ({adjust_lr_fn})" if adjust_lr_fn != "original" else "25x optimizer.lr (original)"
         )
     )
     logger.info_rank0(

@@ -23,6 +23,7 @@ The per-group ``head_blocks`` option orthogonalizes a head-stacked attention
 projection in row blocks (one block per head group) instead of as one matrix.
 """
 
+import math
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -64,11 +65,13 @@ except ImportError:  # pragma: no cover - torch < 2.9 fallback
 
 
 __all__ = [
+    "ADJUST_LR_FNS",
     "DEFAULT_NS_COEFFICIENTS",
     "DEFAULT_NS_STEPS",
     "DistributedMuon",
     "batched_gram_newton_schulz",
     "NS_IMPLEMENTATIONS",
+    "adjust_muon_lr",
     "batched_newton_schulz",
     "infer_head_block_counts",
     "run_newton_schulz",
@@ -77,6 +80,21 @@ __all__ = [
 
 
 DEFAULT_NS_COEFFICIENTS: Tuple[float, float, float] = (DEFAULT_A, DEFAULT_B, DEFAULT_C)
+
+# Per-matrix update scaling:
+#   original:        sqrt(max(1, d_out / d_in))      (Keller Jordan)
+#   match_rms_adamw: 0.2 * sqrt(max(d_out, d_in))    (Moonlight; matches AdamW update RMS)
+#   spectral:        sqrt(d_out / d_in)              (spectral muP; lr transfers across widths)
+ADJUST_LR_FNS: Tuple[str, ...] = ("original", "match_rms_adamw", "spectral")
+
+
+def adjust_muon_lr(lr: float, adjust_lr_fn: Optional[str], param_shape: Sequence[int]) -> float:
+    """Scale ``lr`` for a ``[d_out, d_in]`` matrix (``nn.Linear`` weight layout)."""
+    if adjust_lr_fn == "spectral":
+        d_out, d_in = param_shape[:2]
+        return lr * math.sqrt(d_out / d_in)
+    return _adjust_lr(lr, adjust_lr_fn, param_shape)
+
 
 # Lookup-table-like 2D weights are kept on AdamW.
 _DEFAULT_ADAMW_NAME_PATTERNS: Tuple[str, ...] = (
@@ -841,7 +859,7 @@ class DistributedMuon(Optimizer):
             raise ValueError(f"momentum should be >= 0 but is: {momentum}")
         if not 0.0 <= float(weight_decay):
             raise ValueError(f"weight decay should be >= 0 but is: {weight_decay}")
-        if adjust_lr_fn is not None and adjust_lr_fn not in ("original", "match_rms_adamw"):
+        if adjust_lr_fn is not None and adjust_lr_fn not in ADJUST_LR_FNS:
             raise ValueError(f"Adjust learning rate function {adjust_lr_fn} is not supported")
         if ns_implementation not in NS_IMPLEMENTATIONS:
             raise ValueError(f"ns_implementation must be one of {NS_IMPLEMENTATIONS}, got {ns_implementation!r}")
@@ -1063,7 +1081,7 @@ class DistributedMuon(Optimizer):
         if head_blocks > 1:
             # Scale by the block shape NS actually saw, not the full matrix.
             lr_shape = (lr_shape[0] // head_blocks, lr_shape[1])
-        adjusted_lr = _adjust_lr(lr, adjust_lr_fn, lr_shape)
+        adjusted_lr = adjust_muon_lr(lr, adjust_lr_fn, lr_shape)
 
         if weight_decay != 0.0:
             p.mul_(1 - lr * weight_decay)

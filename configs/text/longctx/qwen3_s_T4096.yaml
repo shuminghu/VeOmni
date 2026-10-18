@@ -1,17 +1,36 @@
-# Qwen3-S (76M non-embedding / 192M total) from scratch on FineWeb-Edu + selective copy, T=4096.
+# Qwen3-S (76M non-embedding / 310M total, untied embeddings) from scratch on FineWeb-Edu + selective copy, T=4096.
+# Muon (5-step quintic NS schedule, spectral sqrt(d_out/d_in) update scale) on hidden matrices; AdamW on
+# embeddings / lm_head / norms; muP init.
 model:
   config_path: configs/model_configs/qwen/Qwen3-S-longctx.json
   tokenizer_path: /home/shu/models/Qwen3-0.6B-Base
   ops_implementation:
     attn_implementation: flash_attention_2
+  init:
+    scheme: mup
+    embedding_std: 1.0
+    hidden_std: 1.0
+    unembedding_std: 1.0
   optimizer:
-    type: adamw
-    lr: 1.0e-3
-    lr_min: 1.0e-4
+    type: muon
+    lr: 3.0e-3  # AdamW group: embed_tokens, lm_head, norms
+    lr_min: 3.0e-4
     lr_warmup_ratio: 0.01
     lr_decay_style: cosine
     weight_decay: 0.1
     max_grad_norm: 1.0
+    muon_lr: 2.0e-2  # used as-is: spectral scaling replaces any AdamW-matching rescale
+    muon_adjust_lr_fn: spectral
+    muon_weight_decay: 0.0
+    muon_momentum: 0.95
+    muon_nesterov: true
+    # 5-step quintic schedule from NVIDIA Emerging-Optimizers (muon_utils, "quintic").
+    muon_ns_coefficients:
+    - [4.0848, -6.8946, 2.9270]
+    - [3.9505, -6.3029, 2.6377]
+    - [3.7418, -5.5913, 2.3037]
+    - [2.8769, -3.1427, 1.2046]
+    - [2.8366, -3.0525, 1.2012]
   accelerator:
     init_device: meta
     fsdp_config:
