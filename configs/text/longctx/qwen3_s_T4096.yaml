@@ -1,0 +1,49 @@
+# Qwen3-S (76M non-embedding / 192M total) from scratch on FineWeb-Edu + selective copy, T=4096.
+model:
+  config_path: configs/model_configs/qwen/Qwen3-S-longctx.json
+  tokenizer_path: /home/shu/models/Qwen3-0.6B-Base
+  ops_implementation:
+    attn_implementation: flash_attention_2
+  optimizer:
+    type: adamw
+    lr: 1.0e-3
+    lr_min: 1.0e-4
+    lr_warmup_ratio: 0.01
+    lr_decay_style: cosine
+    weight_decay: 0.1
+    max_grad_norm: 1.0
+  accelerator:
+    init_device: meta
+    fsdp_config:
+      fsdp_mode: fsdp2
+      mixed_precision:
+        enable: true
+
+data:
+  train_path: configs/text/longctx/mix_fineweb_sc10.yaml
+  data_type: pretrain_mix
+  datasets_type: iterable
+  multisource_datasets_type: veomni_weighted_multisource
+  dataset_repeat: true
+  max_seq_len: 4096
+  train_size: 5000000000  # tokens
+  dyn_bsz_buffer_size: 200
+
+train:
+  global_batch_size: 128  # x 4096 tokens = 0.5M tokens / step
+  micro_batch_size: 4
+  dyn_bsz: true
+  num_train_epochs: 1
+  seed: 42
+  channel_loss:
+    enable: true
+    interval: 10
+  checkpoint:
+    output_dir: /home/shu/runs/longctx/qwen3_s_T4096_sc10
+    manager: dcp
+    save_steps: 2000
+    save_hf_weights: true
+  wandb:
+    enable: true
+    project: longctx
+    name: qwen3_s_T4096_sc10

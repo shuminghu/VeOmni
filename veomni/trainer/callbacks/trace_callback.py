@@ -223,6 +223,8 @@ class EnvironMeterCallback(Callback):
             global_batch_size=args.train.global_batch_size,
             empty_cache_steps=args.train.empty_cache_steps,
             enable_multisource=args.data.enable_multisource,
+            # Channel loss reads ds_idx after this meter and strips it before forward itself.
+            keep_multisource_metadata=args.train.channel_loss.enable,
             dataloader=trainer.train_dataloader,
             data_path=args.data.train_path,
             gc_steps=args.train.gc_steps,

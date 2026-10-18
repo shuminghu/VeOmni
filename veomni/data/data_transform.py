@@ -92,6 +92,39 @@ def process_plaintext_example(
     return examples
 
 
+@DATA_TRANSFORM_REGISTRY.register("pretrain_mix")
+def process_pretrain_mix_example(
+    example: Dict[str, Any],
+    tokenizer: "PreTrainedTokenizer",
+    max_seq_len: int,
+    text_keys: Union[str, List[str]] = "text",
+    **kwargs,
+) -> List[Dict[str, "torch.Tensor"]]:
+    """Plaintext pretraining mixed with synthetic tasks.
+
+    Rows with a ``task`` field are synthetic recipes (see ``veomni.data.synthetic``) rendered into one sample
+    with loss only on the answer; every other row goes through ``plaintext``.
+    """
+    if not example.get("task"):
+        return process_plaintext_example(example, tokenizer, max_seq_len, text_keys, **kwargs)
+
+    from .synthetic import build_synthetic_sample
+
+    sample = build_synthetic_sample(example, tokenizer)
+    if len(sample.input_ids) > max_seq_len:
+        raise ValueError(
+            f"Synthetic sample of length {len(sample.input_ids)} exceeds max_seq_len={max_seq_len}; "
+            "regenerate the recipes with a matching --max_seq_len."
+        )
+    return [
+        {
+            "input_ids": torch.tensor(sample.input_ids),
+            "attention_mask": torch.ones(len(sample.input_ids), dtype=torch.long),
+            "labels": torch.tensor(sample.labels),
+        }
+    ]
+
+
 @DATA_TRANSFORM_REGISTRY.register("conversation")
 def process_conversation_example(
     example: Dict[str, Any],

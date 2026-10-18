@@ -1,0 +1,12 @@
+# FineWeb-Edu + 10% (of tokens) selective-copy recipes.
+# Data prep: scripts/longctx/{split_fineweb,make_recipes}.py (see docs/examples/longctx.md).
+sources:
+- /home/shu/datasets/fineweb-edu-longctx/train
+- /home/shu/datasets/synthetic/selective_copy/train_T4096
+names:
+- fineweb_edu
+- selective_copy
+level: token
+schedule:
+- schedule_type: const
+  weights: [0.9, 0.1]

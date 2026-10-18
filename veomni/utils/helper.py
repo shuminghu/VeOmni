@@ -145,10 +145,15 @@ def _compute_wan_seqlens(micro_batch: Dict[str, "torch.Tensor"]) -> List[int]:
     return dit_latents_seqlens
 
 
-def _get_multisource_ds_idx(micro_batch: Dict[str, "torch.Tensor"]) -> List[int]:
-    ds_idx = micro_batch.pop("ds_idx")
-    micro_batch.pop("source_name", None)
-    micro_batch.pop("cur_token_num", None)
+def _get_multisource_ds_idx(micro_batch: Dict[str, "torch.Tensor"], keep_metadata: bool = False) -> List[int]:
+    """Read the per-sequence source ids. By default also strips the multisource metadata keys so they never
+    reach the model; ``keep_metadata=True`` leaves them for a later consumer (e.g. channel loss) to strip."""
+    if keep_metadata:
+        ds_idx = micro_batch["ds_idx"]
+    else:
+        ds_idx = micro_batch.pop("ds_idx")
+        micro_batch.pop("source_name", None)
+        micro_batch.pop("cur_token_num", None)
     if isinstance(ds_idx, torch.Tensor):
         # packed micro batch (e.g. PackingCollator)
         return ds_idx.tolist()
@@ -209,6 +214,8 @@ class EnvironMeter:
         config (PretrainedConfig): The configuration of the model.
         global_batch_size (int): The global batch size.
         enable_multisource (bool, optional): Whether to enable the multi-source dataloader. Defaults to False.
+        keep_multisource_metadata (bool, optional): Read ``ds_idx`` / ``source_name`` without removing them from
+            the micro batch. Set when another consumer (channel loss) needs them and strips them before forward.
         dataloader (DataLoader, optional): The training dataloader for multi-source dataloader. Defaults to None.
         data_path (str, optional): The data path for multi-source dataloader. Defaults to "".
         empty_cache_steps (int, optional): The number of steps to empty the cache. Defaults to 500.
@@ -219,6 +226,7 @@ class EnvironMeter:
         config: "PretrainedConfig",
         global_batch_size: int,
         enable_multisource: bool = False,
+        keep_multisource_metadata: bool = False,
         dataloader: Optional["DataLoader"] = None,
         data_path: str = "",
         empty_cache_steps: int = 500,
@@ -228,6 +236,7 @@ class EnvironMeter:
         self.config = config
         self.global_batch_size = global_batch_size
         self.enable_multisource = enable_multisource
+        self.keep_multisource_metadata = keep_multisource_metadata
         self.empty_cache_steps = empty_cache_steps
         self.gc_steps = gc_steps
 
@@ -282,12 +291,12 @@ class EnvironMeter:
                     self.batch_seqlens.extend(_compute_seqlens(sample))
                     self.images_seqlens.extend(_compute_image_seqlens(sample))
                     if self.enable_multisource:
-                        self.batch_ds_idx.extend(_get_multisource_ds_idx(sample))
+                        self.batch_ds_idx.extend(_get_multisource_ds_idx(sample, self.keep_multisource_metadata))
             else:
                 self.batch_seqlens.extend(_compute_seqlens(micro_batch))
                 self.images_seqlens.extend(_compute_image_seqlens(micro_batch))
                 if self.enable_multisource:
-                    self.batch_ds_idx.extend(_get_multisource_ds_idx(micro_batch))
+                    self.batch_ds_idx.extend(_get_multisource_ds_idx(micro_batch, self.keep_multisource_metadata))
         else:  # dit diffusers model
             self.batch_seqlens.extend(_compute_wan_seqlens(micro_batch))
 

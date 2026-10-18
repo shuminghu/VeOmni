@@ -1971,7 +1971,7 @@ class DataArguments:
             "help": "Number of samples for training to compute training steps for non-dynamic batch dataloader."
         },
     )
-    data_type: Literal["plaintext", "conversation", "diffusion", "classification", "dpo"] = field(
+    data_type: Literal["plaintext", "pretrain_mix", "conversation", "diffusion", "classification", "dpo"] = field(
         default="conversation",
         metadata={"help": "Type of the training data."},
     )
@@ -2025,6 +2025,8 @@ class DataArguments:
         if self.text_keys is None:
             if self.data_type == "plaintext":
                 self.text_keys = "content_split"
+            elif self.data_type == "pretrain_mix":
+                self.text_keys = "text"
             elif self.data_type == "conversation":
                 self.text_keys = "messages"
             elif self.data_type == "classification":
@@ -2069,7 +2071,7 @@ class VeOmniArguments:
                     "model.accelerator.torch_compile.enable is not supported by this data pipeline. "
                     "The pipeline must implement pad_to_length for static packed shapes."
                 )
-            if self.data.data_type not in ("plaintext", "conversation", "classification", "dpo"):
+            if self.data.data_type not in ("plaintext", "pretrain_mix", "conversation", "classification", "dpo"):
                 raise ValueError(
                     "model.accelerator.torch_compile.enable currently supports packed language-model data types only; "
                     f"got data.data_type={self.data.data_type!r}."
