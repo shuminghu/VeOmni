@@ -15,11 +15,25 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+def pick_nll_set(lengths, max_pos):
+    """Shortest NLL eval set covering ``max_pos`` positions (longest set when there is no limit)."""
+    if not lengths:
+        return None
+    covering = [n for n in lengths if max_pos and n >= max_pos]
+    return min(covering) if covering else max(lengths)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", nargs="+", required=True)
     parser.add_argument("--labels", nargs="+", default=None)
     parser.add_argument("--train_len", type=int, default=None, help="Draw a marker at the training length.")
+    parser.add_argument(
+        "--nll_max_pos",
+        type=int,
+        default=None,
+        help="Plot NLL only for positions below this (default: --train_len; 0 = no limit).",
+    )
     parser.add_argument("--placement", default="uniform")
     parser.add_argument("--noise_size", type=int, default=1)
     parser.add_argument(
@@ -31,7 +45,8 @@ def main():
     results = [json.load(open(p)) for p in args.results]
 
     n_copies = sorted({c["n_copy"] for r in results for c in r.get("selective_copy", {}).get("cells", [])})
-    nll_len = max((int(k) for r in results for k in r.get("position_nll", {})), default=None)
+    nll_max_pos = args.train_len if args.nll_max_pos is None else args.nll_max_pos
+    nll_len = pick_nll_set({int(k) for r in results for k in r.get("position_nll", {})}, nll_max_pos)
     num_panels = len(n_copies) + (nll_len is not None)
     fig, axes = plt.subplots(1, num_panels, figsize=(4.2 * num_panels, 3.6), squeeze=False)
     axes = axes[0]
@@ -61,7 +76,7 @@ def main():
         ax = axes[-1]
         for res, label in zip(results, labels):
             bins = res.get("position_nll", {}).get(str(nll_len), {}).get("log2_bins", [])
-            bins = [b for b in bins if b["start"] >= 16]
+            bins = [b for b in bins if b["start"] >= 16 and (not nll_max_pos or b["end"] <= nll_max_pos)]
             ax.errorbar(
                 [b["start"] for b in bins],
                 [b["nll"] for b in bins],
@@ -76,7 +91,7 @@ def main():
             ylabel="NLL",
             title=f"FineWeb-Edu NLL vs position (L={nll_len})",
         )
-        if args.train_len:
+        if args.train_len and not (nll_max_pos and nll_max_pos <= args.train_len):
             ax.axvline(args.train_len, color="gray", linestyle="--", linewidth=1)
 
     # One shared legend above all panels: every panel plots the same runs in the same colors.
