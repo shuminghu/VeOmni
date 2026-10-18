@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 
@@ -11,6 +12,7 @@ from transformers import AutoTokenizer
 
 from veomni.data.data_transform import process_pretrain_mix_example
 from veomni.data.synthetic import build_lexicon, get_synthetic_task
+from veomni.data.synthetic.harness import NL2_TEST_PARTS, NL2_TRAIN_PARTS, SELECTIVE_COPY_TEMPLATES
 from veomni.data.synthetic.lexicon import CONTRACTION_STEMS, load_wordlist
 from veomni.data.synthetic.selective_copy import PLACEMENT_SPANS
 from veomni.utils.constants import IGNORE_INDEX
@@ -46,16 +48,28 @@ def test_wordlist_has_no_contraction_stems():
     assert not CONTRACTION_STEMS & set(load_wordlist())
 
 
-@pytest.mark.parametrize("fmt", ["nl", "raw"])
+@pytest.mark.parametrize("fmt", ["nl", "nl2", "raw"])
 @pytest.mark.parametrize("split", ["train", "test"])
 @pytest.mark.parametrize("noise_size", [1, 16])
 def test_all_templates_are_canonical(task, fmt, split, noise_size):
-    for template_id in range(len(task.templates[fmt][split])):
-        for seed in range(4):
+    num_templates = len(task.templates[fmt][split])
+    for template_id in range(num_templates):
+        for seed in range(4 if num_templates <= 16 else 1):
             sample = task.build(
                 _recipe(seed=seed, fmt=fmt, template_split=split, template_id=template_id, noise_size=noise_size)
             )
             task.check_canonical(sample)
+
+
+def test_nl2_body_start_not_marked_by_punctuation():
+    """Guards the v1 shortcut: in ``nl`` the only prefix colon sits right before the body."""
+    prefixes = [t.prefix for t in SELECTIVE_COPY_TEMPLATES["nl2"]["train"]]
+    word_after_inner_colon = re.compile(r": [A-Za-z]")
+    assert sum(bool(word_after_inner_colon.search(p)) for p in prefixes) / len(prefixes) > 0.4
+    assert sum(p.endswith(":") for p in prefixes) / len(prefixes) < 0.5
+    train_parts, test_parts = NL2_TRAIN_PARTS, NL2_TEST_PARTS
+    for name in ("intros", "markers", "closers", "questions"):
+        assert not set(getattr(train_parts, name)) & set(getattr(test_parts, name)), name
 
 
 @pytest.mark.parametrize("ctx_len,n_copy", [(16, 1), (64, 8), (1000, 64)])

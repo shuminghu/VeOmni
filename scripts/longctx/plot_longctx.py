@@ -37,6 +37,9 @@ def main():
     parser.add_argument("--placement", default="uniform")
     parser.add_argument("--noise_size", type=int, default=1)
     parser.add_argument(
+        "--template_split", default="train", help="train: primary metric; test: held-out prompt templates."
+    )
+    parser.add_argument(
         "--metric", default="token_acc", choices=["token_acc", "first_item_acc", "exact", "answer_nll"]
     )
     parser.add_argument("--out", required=True)
@@ -59,6 +62,7 @@ def main():
                     c["n_copy"] == n_copy
                     and c["placement"] == args.placement
                     and c.get("noise_size", 1) == args.noise_size
+                    and c["template_split"] == args.template_split
                 ):
                     curve[c["ctx_len"]].append(c[args.metric])
             xs = sorted(curve)
@@ -67,7 +71,7 @@ def main():
             xscale="log",
             xlabel="body length L",
             ylabel=args.metric,
-            title=f"selective copy, n_copy={n_copy}, noise k={args.noise_size}",
+            title=f"SC n_copy={n_copy}, k={args.noise_size}, {args.template_split} templates",
         )
         if args.train_len:
             ax.axvline(args.train_len, color="gray", linestyle="--", linewidth=1)

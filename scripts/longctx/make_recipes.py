@@ -105,12 +105,13 @@ def make_test(args, tokenizer) -> None:
             "cell",
         )
     }
-    # noise_size is the outer loop so the noise_size=1 cells keep their seeds when other sizes are added.
+    # Seeds are consecutive over cells, outer axes first: appending a value to an outer axis (noise size, template
+    # split) adds cells at the end and leaves the seeds of existing cells unchanged.
     cells = list(
-        itertools.product(args.noise_sizes, args.ctx_lens, args.n_copies, args.placements, args.template_splits)
+        itertools.product(args.noise_sizes, args.template_splits, args.ctx_lens, args.n_copies, args.placements)
     )
     seed = TEST_SEED_BASE
-    for noise_size, ctx_len, n_copy, placement, template_split in cells:
+    for noise_size, template_split, ctx_len, n_copy, placement in cells:
         cell = f"L{ctx_len}_n{n_copy}_{placement}_{template_split}" + (f"_k{noise_size}" if noise_size > 1 else "")
         for _ in range(args.num_per_cell):
             recipe = SelectiveCopyRecipe(
@@ -151,7 +152,7 @@ def main():
     parser.add_argument("split", choices=["train", "test"])
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--out_dir", required=True)
-    parser.add_argument("--fmt", default="nl", choices=["nl", "raw"])
+    parser.add_argument("--fmt", default="nl2", choices=["nl", "nl2", "raw"], help="Template set (harness.py).")
     parser.add_argument("--content_size", type=int, default=2048)
     parser.add_argument("--noise_size", type=int, default=1, help="Train only; test uses --noise_sizes.")
     # train
@@ -166,7 +167,8 @@ def main():
     parser.add_argument("--ctx_lens", type=int, nargs="+", default=[2**k for k in range(8, 16)])
     parser.add_argument("--n_copies", type=int, nargs="+", default=[8, 32, 64])
     parser.add_argument("--placements", nargs="+", default=["uniform", "early"])
-    parser.add_argument("--template_splits", nargs="+", default=["test"])
+    # "train" (templates seen in training) is the primary metric; "test" (held-out templates) checks prompt transfer.
+    parser.add_argument("--template_splits", nargs="+", default=["test", "train"])
     parser.add_argument("--num_per_cell", type=int, default=128)
     parser.add_argument(
         "--noise_sizes", type=int, nargs="+", default=[1], help="1: filler is ' .'; k>1: k filler words."
