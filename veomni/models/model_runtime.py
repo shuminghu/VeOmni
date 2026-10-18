@@ -141,6 +141,7 @@ class VeOmniModelRuntime:
         self.setup()
         with use_parallel_state(self.model_name):
             self._build_model()
+            self._apply_qat()
             self._freeze_model_module()
             self._build_parallelized_model()
             self._build_optimizer()
@@ -252,6 +253,15 @@ class VeOmniModelRuntime:
             config_kwargs=args.model_config,
         )
         self.model_config = self.model.config
+
+    def _apply_qat(self) -> None:
+        """Swap hidden linears for their fake-quantized forward (``model.qat``), before LoRA, sharding and weight
+        loading: only module classes change, so parameters, init and checkpoints are unaffected."""
+        qat = self.args.qat
+        if qat.weight == "ternary_twn":
+            from ..ops.qat.ternary import apply_ternary_qat
+
+            apply_ternary_qat(self.model, qat.group_size, qat.threshold, qat.exclude_modules)
 
     def _build_model_assets(self) -> None:
         """Load the preprocessor this model reads its inputs through.

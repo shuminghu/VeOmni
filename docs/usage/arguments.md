@@ -167,6 +167,7 @@ own `safetensor_idx_path`.
 | optimizer | `OptimizerConfig` | — | Optimizer and learning-rate schedule for this model. |
 | accelerator | `AcceleratorConfig` | — | Parallelism, sharding, and placement for this model. |
 | init | `InitConfig` | — | Parameter initialization for from-scratch runs. See below. |
+| qat | `QATConfig` | — | Model-agnostic weight quantization-aware training. See below. |
 
 `model.init.*` applies only when no weights are loaded (`model_path` unset, not resuming):
 
@@ -176,6 +177,15 @@ own `safetensor_idx_path`.
 | embedding_std | `float` | `1.0` | muP input-embedding std. |
 | hidden_std | `float` | `1.0` | Multiplier on the hidden-weight spectral std. |
 | unembedding_std | `float` | `1.0` | Multiplier on the `1/fan_in` `lm_head` std. |
+
+`model.qat.*` fake-quantizes the weights of every hidden `nn.Linear` (never `lm_head` or embeddings) by swapping its class to `TernaryLinear` (`veomni/ops/qat/ternary.py`). Parameters, state-dict keys and checkpoints keep the latent full-precision weights; evaluate with the same ternarization applied (`ternarize_linears_`). This is independent of `ops_implementation.qat_implementation`, DeepSeek-V4's per-model FP8 recipe.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| weight | `Literal["none", "ternary_twn"]` | `"none"` | `ternary_twn`: forward with TWN-ternarized weights `alpha * {-1, 0, 1}` (zero below `threshold * mean\|w\|`, `alpha` = mean kept `\|w\|`), straight-through gradient to the latent weight. Weight-only; activations are not quantized. |
+| group_size | `int` | `0` | Entries sharing one threshold and `alpha`: `0` per output row, `g > 0` per `g` consecutive inputs. |
+| threshold | `float` | `0.7` | TWN threshold multiplier. |
+| exclude_modules | `List[str]` | `[]` | Module-name regexes of hidden linears to keep in full precision. |
 
 `processor_config` is to the preprocessor what `model_config` is to the architecture: its keys are forwarded to `AutoProcessor.from_pretrained`, overriding what the checkpoint ships. Leave it empty and the repository's own `preprocessor_config.json` is authoritative. Pixel budgets belong in `data.mm_configs`.
 

@@ -25,6 +25,10 @@ stays bit-aligned with inference by construction. Quantizing calls require an
 NVIDIA SM90 or later GPU and load the backend lazily, so importing this package
 on CPU or NPU stays free. ``qat_linear(..., enabled=False)`` bypasses
 quantization and its hardware and dependency checks.
+
+The ternary (TWN, weight-only) recipe in :mod:`veomni.ops.qat.ternary` is
+pure PyTorch and model agnostic: it swaps hidden ``nn.Linear`` classes instead
+of needing per-model call sites, and is enabled with ``model.qat.weight``.
 """
 
 from ._hardware import require_tilelang_sm90
@@ -39,6 +43,13 @@ from .fp8_blockwise import (
     fp8_fake_quant_stacked_weight,
     fp8_fake_quant_weight,
     qat_linear,
+)
+from .ternary import (
+    TernaryLinear,
+    apply_ternary_qat,
+    ternarize_linears_,
+    ternary_fake_quant_weight,
+    twn_ternarize,
 )
 
 
@@ -78,4 +89,9 @@ __all__ = [
     "fp8_fake_quant_weight",
     "fp8_weight_quant",
     "qat_linear",
+    "TernaryLinear",
+    "apply_ternary_qat",
+    "ternarize_linears_",
+    "ternary_fake_quant_weight",
+    "twn_ternarize",
 ]

@@ -29,6 +29,7 @@ from .arguments_types import (
     OpsImplementationConfig,
     OptimizerConfig,
     ProfileConfig,
+    QATConfig,
     TorchCompileConfig,
     TrainingArguments,
     VeOmniArguments,

@@ -100,6 +100,41 @@ class InitConfig:
 
 
 @dataclass
+class QATConfig:
+    """model.qat.* — Model-agnostic quantization-aware training of hidden ``nn.Linear`` weights.
+
+    Separate from ``ops_implementation.qat_implementation``, which selects DeepSeek-V4's per-model FP8 recipe.
+    """
+
+    weight: Literal["none", "ternary_twn"] = field(
+        default="none",
+        metadata={
+            "help": (
+                "'none': train in the model dtype. 'ternary_twn': every hidden nn.Linear (not lm_head or embeddings) "
+                "runs its forward with TWN-ternarized weights alpha * {-1, 0, 1} and a straight-through gradient "
+                "to the latent weight (veomni/ops/qat/ternary.py). Activations are not quantized."
+            )
+        },
+    )
+    group_size: int = field(
+        default=0,
+        metadata={"help": "Entries sharing one (threshold, alpha): 0 = one per output row, g > 0 = per g inputs."},
+    )
+    threshold: float = field(
+        default=0.7, metadata={"help": "TWN threshold: zero out |w| <= threshold * mean|w| of the group."}
+    )
+    exclude_modules: List[str] = field(
+        default_factory=list, metadata={"help": "Module-name regexes of hidden linears to keep in full precision."}
+    )
+
+    def __post_init__(self):
+        if self.group_size < 0:
+            raise ValueError(f"model.qat.group_size must be >= 0, got {self.group_size}.")
+        if self.threshold < 0:
+            raise ValueError(f"model.qat.threshold must be >= 0, got {self.threshold}.")
+
+
+@dataclass
 class OptimizerConfig:
     """model.optimizer.* — Optimizer and learning-rate schedule.
 
@@ -1892,6 +1927,7 @@ class ModelArguments(BaseModelArguments):
     accelerator: AcceleratorConfig = field(default_factory=AcceleratorConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     init: InitConfig = field(default_factory=InitConfig)
+    qat: QATConfig = field(default_factory=QATConfig)
 
     def __post_init__(self):
         super().__post_init__()

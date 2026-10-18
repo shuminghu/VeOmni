@@ -17,7 +17,7 @@ import json
 import math
 import os
 from collections import defaultdict
-from typing import Dict, Iterator, List, Sequence
+from typing import Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -27,6 +27,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from veomni.data.synthetic import get_synthetic_task
+from veomni.ops.qat.ternary import ternarize_linears_
 
 
 # ---------------------------------------------------------------- model helpers
@@ -35,10 +36,20 @@ from veomni.data.synthetic import get_synthetic_task
 class CausalLMScorer:
     """Backbone forward + chunked LM head, so long sequences never materialize full logits."""
 
-    def __init__(self, model_path: str, attn_implementation: str, device: torch.device, head_tokens: int = 16384):
+    def __init__(
+        self,
+        model_path: str,
+        attn_implementation: str,
+        device: torch.device,
+        head_tokens: int = 16384,
+        ternary: Optional[dict] = None,
+    ):
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path, dtype=torch.bfloat16, attn_implementation=attn_implementation
         ).to(device)
+        if ternary is not None:
+            # A ternary-QAT checkpoint stores latent weights; evaluate the ternary model training saw.
+            ternarize_linears_(self.model, **ternary)
         self.model.eval()
         self.backbone = self.model.base_model
         self.lm_head = self.model.get_output_embeddings()
@@ -262,11 +273,24 @@ def main():
     parser.add_argument("--max_ctx_len", type=int, default=None, help="Skip SC cells / NLL sets longer than this.")
     parser.add_argument("--limit_per_cell", type=int, default=None)
     parser.add_argument("--linear_bin", type=int, default=256)
+    parser.add_argument(
+        "--qat_weight",
+        default="none",
+        choices=["none", "ternary_twn"],
+        help="Match the training run's model.qat.weight: ternarize hidden linears before evaluating.",
+    )
+    parser.add_argument("--qat_group_size", type=int, default=0, help="model.qat.group_size of the run.")
+    parser.add_argument("--qat_threshold", type=float, default=0.7, help="model.qat.threshold of the run.")
     args = parser.parse_args()
 
     rank, world_size, device = init_dist()
     tokenizer = AutoTokenizer.from_pretrained(os.path.expanduser(args.tokenizer_path or args.model_path))
-    scorer = CausalLMScorer(os.path.expanduser(args.model_path), args.attn_implementation, device)
+    ternary = (
+        {"group_size": args.qat_group_size, "threshold": args.qat_threshold}
+        if args.qat_weight == "ternary_twn"
+        else None
+    )
+    scorer = CausalLMScorer(os.path.expanduser(args.model_path), args.attn_implementation, device, ternary=ternary)
     results: Dict[str, object] = {"model_path": args.model_path, "args": vars(args)}
 
     if args.sc_test_dir:

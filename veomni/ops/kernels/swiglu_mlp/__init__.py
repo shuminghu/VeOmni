@@ -36,9 +36,12 @@ def has_plain_linear_projections(mlp: nn.Module) -> bool:
     """Whether ``swiglu_mlp`` may read ``mlp``'s projection weights directly.
 
     A wrapped projection such as ``LoraLinear`` has no ``weight`` and must run
-    its own forward, so the MLP has to call the projection modules instead.
+    its own forward, so the MLP has to call the projection modules instead. The
+    check is on the exact type: an ``nn.Linear`` subclass (e.g. ternary QAT's
+    ``TernaryLinear``) overrides ``forward``, and reading its raw ``weight``
+    would silently skip that override.
     """
-    return all(isinstance(getattr(mlp, name), nn.Linear) for name in ("gate_proj", "up_proj", "down_proj"))
+    return all(type(getattr(mlp, name)) is nn.Linear for name in ("gate_proj", "up_proj", "down_proj"))
 
 
 register_op(
