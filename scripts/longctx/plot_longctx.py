@@ -79,8 +79,10 @@ def main():
         if args.train_len:
             ax.axvline(args.train_len, color="gray", linestyle="--", linewidth=1)
 
-    axes[0].legend(fontsize=8)
-    fig.tight_layout()
+    # One shared legend above all panels: every panel plots the same runs in the same colors.
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, legend_labels, loc="upper center", ncol=len(legend_labels), frameon=False)
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
     fig.savefig(args.out, dpi=130)
     print(f"saved {args.out}")
 
