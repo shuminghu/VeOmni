@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 
 WORDLIST_PATH = os.path.join(os.path.dirname(__file__), "assets", "english_words.txt")
 
+# Stems of "n't" contractions, excluded from the word list. FineWeb-Edu mostly writes "doesn’t" (U+2019), which
+# the ASCII-apostrophe word regex splits into "doesn". Dropped outright: standalone "won" / "don" are also mostly
+# "won't" / "don't" in web text, and a lexicon word should read as a whole word.
+CONTRACTION_STEMS = frozenset(
+    "don doesn didn isn won wasn aren weren hasn haven hadn couldn wouldn shouldn mustn needn ain".split()
+)
+
 
 @dataclass(frozen=True)
 class TokenLexicon:

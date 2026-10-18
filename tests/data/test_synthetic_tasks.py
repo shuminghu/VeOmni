@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 
 from veomni.data.data_transform import process_pretrain_mix_example
 from veomni.data.synthetic import build_lexicon, get_synthetic_task
+from veomni.data.synthetic.lexicon import CONTRACTION_STEMS, load_wordlist
 from veomni.data.synthetic.selective_copy import PLACEMENT_SPANS
 from veomni.utils.constants import IGNORE_INDEX
 
@@ -39,6 +40,10 @@ def test_lexicon_single_token_and_disjoint(tokenizer, noise_size):
     assert not set(lexicon.content_ids) & set(lexicon.noise_ids)
     for token_id in lexicon.content_ids[:64] + lexicon.noise_ids:
         assert tokenizer.encode(tokenizer.decode([token_id]), add_special_tokens=False) == [token_id]
+
+
+def test_wordlist_has_no_contraction_stems():
+    assert not CONTRACTION_STEMS & set(load_wordlist())
 
 
 @pytest.mark.parametrize("fmt", ["nl", "raw"])

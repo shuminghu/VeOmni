@@ -13,6 +13,8 @@ from collections import Counter
 
 import pyarrow.parquet as pq
 
+from veomni.data.synthetic.lexicon import CONTRACTION_STEMS
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -36,6 +38,8 @@ def main():
         if seen >= args.num_docs:
             break
 
+    for stem in CONTRACTION_STEMS:
+        counts.pop(stem, None)
     with open(args.out, "w") as f:
         for word, _ in counts.most_common(args.top_k):
             f.write(word + "\n")

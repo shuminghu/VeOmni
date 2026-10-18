@@ -306,7 +306,6 @@ types
 young
 effects
 studies
-don
 show
 current
 symptoms
@@ -982,7 +981,6 @@ ice
 choice
 friends
 patterns
-doesn
 appears
 unit
 fully
@@ -1115,7 +1113,6 @@ break
 aspects
 medicine
 tend
-won
 pattern
 generation
 clearly
@@ -1365,7 +1362,6 @@ forced
 worth
 efficient
 remained
-isn
 element
 credit
 essay
@@ -1487,7 +1483,6 @@ command
 subjects
 letters
 detailed
-didn
 protected
 greatest
 habitat
@@ -2139,7 +2134,6 @@ runs
 snow
 agreed
 covers
-aren
 accessible
 corn
 neither
@@ -2867,7 +2861,6 @@ deficiency
 computing
 win
 lowest
-wasn
 existed
 telling
 shaped
@@ -3676,7 +3669,6 @@ prone
 mystery
 doctrine
 stretch
-haven
 predators
 robust
 hygiene
@@ -3933,7 +3925,6 @@ bulk
 cooked
 wake
 hide
-wouldn
 filters
 crossing
 facial
@@ -4308,7 +4299,6 @@ eligible
 ions
 advised
 hazard
-couldn
 pushing
 worried
 cheaper
@@ -4849,7 +4839,6 @@ fled
 stopping
 traumatic
 judicial
-shouldn
 luck
 disappear
 jet
@@ -5842,7 +5831,6 @@ diagrams
 suppliers
 stolen
 seventh
-weren
 candy
 sticks
 fold
@@ -6455,7 +6443,6 @@ pains
 repairs
 minus
 est
-hasn
 starch
 learnt
 ministers
@@ -7998,3 +7985,16 @@ motives
 viability
 itchy
 entails
+eczema
+vocational
+uncover
+folklore
+complain
+heir
+scriptures
+simplify
+crowds
+dialect
+soybean
+wipe
+clips
