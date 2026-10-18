@@ -56,6 +56,8 @@ class SelectiveCopyRecipe:
     fmt: str = "nl"
     content_size: int = 2048
     noise_size: int = 1
+    # False (pre-capacity-axis recipes): content drawn with replacement, so a word can repeat within a sample.
+    unique_content: bool = False
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "SelectiveCopyRecipe":
@@ -96,7 +98,14 @@ class SelectiveCopyTask(SyntheticTask):
         positions = np.sort(rng.choice(span_hi - span_lo, size=recipe.n_copy, replace=False)) + span_lo
 
         content_ids = np.asarray(self.lexicon(recipe).content_ids)
-        content = content_ids[rng.integers(len(content_ids), size=recipe.n_copy)]
+        if recipe.unique_content:
+            # Repeated words make "what came after X" ambiguous, which matters once n_copy is a sizeable
+            # fraction of the lexicon (~n^2 / 2|V| repeated pairs with replacement).
+            if recipe.n_copy > len(content_ids):
+                raise ValueError(f"n_copy={recipe.n_copy} exceeds the content lexicon size {len(content_ids)}.")
+            content = content_ids[rng.choice(len(content_ids), size=recipe.n_copy, replace=False)]
+        else:
+            content = content_ids[rng.integers(len(content_ids), size=recipe.n_copy)]
         return template_id, positions, content
 
     def build(self, row: Mapping[str, Any]) -> SyntheticSample:

@@ -1,9 +1,10 @@
 # FineWeb-Edu + 10% (of tokens) selective-copy recipes.
 # Data prep: scripts/longctx/{split_fineweb,make_recipes}.py (commands in the run diary).
-# Recipes use the composed `nl2` templates (veomni/data/synthetic/harness.py).
+# Recipes use the composed `nl2` templates (veomni/data/synthetic/harness.py), n_copy log-uniform in 1..512 with
+# unique content (capacity axis); the n_copy <= 64 set is train_T4096_nl2.
 sources:
 - /home/shu/datasets/fineweb-edu-longctx/train
-- /home/shu/datasets/synthetic/selective_copy/train_T4096_nl2
+- /home/shu/datasets/synthetic/selective_copy/train_T4096_cap512
 names:
 - fineweb_edu
 - selective_copy

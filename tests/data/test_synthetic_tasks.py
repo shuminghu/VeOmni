@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import numpy as np
 import pytest
 import torch
 from tools import hf_local_or_remote
@@ -114,6 +115,19 @@ def test_pinned_layout_overrides_seed(task, tokenizer):
     body_start = sample.meta["body_start"]
     assert sample.meta["positions"] == [body_start, body_start + 7, body_start + 19]
     assert sample.meta["content"] == content
+
+
+def test_unique_content(task):
+    # Parquet hands back numpy bools; 512 of 2048 words with replacement would repeat ~64 pairs.
+    for seed in range(4):
+        content = task.build(_recipe(seed=seed, ctx_len=2048, n_copy=512, unique_content=np.bool_(True))).meta[
+            "content"
+        ]
+        assert len(set(content)) == 512
+    content = task.build(_recipe(seed=0, ctx_len=2048, n_copy=512, unique_content=np.bool_(False))).meta["content"]
+    assert len(set(content)) < 512
+    with pytest.raises(ValueError, match="exceeds the content lexicon"):
+        task.build(_recipe(ctx_len=4096, n_copy=600, content_size=512, unique_content=True))
 
 
 @pytest.mark.parametrize("placement", sorted(PLACEMENT_SPANS))
