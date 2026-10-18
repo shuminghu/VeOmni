@@ -12,6 +12,9 @@ seen in training. That is the primary metric; held-out templates only measure pr
 - **No length generalization.** Exact match is 0 at L=8k for every checkpoint, first-item accuracy ≤0.57 at 8k and
   ≈0 from 16k. It does not improve with training.
 - FineWeb-Edu NLL (positions < T) falls with position and with training: mean 3.80 → 3.30.
+- **n_copy generalizes; length does not.** Trained with n ≤ 64, the model still copies 128–256 words almost
+  perfectly within T (exact 0.95–0.98 at n=128, token acc ≥ 0.99 at n=256), and 512 words at 0.96 per word. Unlike
+  length, this improves with training. See [n_copy generalization](#n_copy-generalization).
 
 ## Model
 | | |
@@ -176,8 +179,115 @@ python scripts/longctx/plot_longctx.py --results $E/step{500,1000,1500,1908}/res
   --template_split train --metric exact --placement uniform --out initial_baseline_plots/sc_exact_uniform.png
 ```
 
+## n_copy generalization
+Training only saw n ≤ 64. This asks how many words the same checkpoints can copy beyond that.
+
+**Test set** `~/datasets/synthetic/selective_copy/test_cap_nl_diag` (commit `56d17541`): the same 8 `nl` train
+templates, `uniform` placement, L ∈ {256 … 8k} × n ∈ {8, 32, 64, 128, 256, 512}, 128 instances per cell. Cells with
+L < 4n are skipped (training keeps n ≤ L/4). Content words are drawn **without replacement**: with replacement,
+512 draws from 2,048 words repeat ~64 pairs, and a repeated word makes "the word after X" ambiguous. Seeds and
+content therefore differ from `test_nl`, so n ≤ 64 numbers here match the tables above only statistically. Outputs:
+`~/runs/longctx/a0_pilot_1B/eval/step{500,1000,1500,1908}_cap_nl/{results.json,sc_samples.jsonl}`.
+
+#### Token accuracy, placement `uniform` (– = cell skipped, L < 4n)
+
+| step | n_copy | 256 | 512 | 1k | 2k | 4k | 8k |
+|---|---|---|---|---|---|---|---|
+| 500 | 64 | 1.00 | 1.00 | 1.00 | 1.00 | 0.99 | 0.63 |
+| 500 | 128 | – | 0.98 | 0.99 | 0.99 | 0.98 | 0.64 |
+| 500 | 256 | – | – | 0.92 | 0.98 | 0.95 | 0.61 |
+| 500 | 512 | – | – | – | 0.84 | 0.88 | 0.52 |
+| 1000 | 64 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.64 |
+| 1000 | 128 | – | 1.00 | 1.00 | 1.00 | 0.99 | 0.68 |
+| 1000 | 256 | – | – | 1.00 | 1.00 | 0.97 | 0.61 |
+| 1000 | 512 | – | – | – | 0.96 | 0.92 | 0.48 |
+| 1500 | 64 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.70 |
+| 1500 | 128 | – | 1.00 | 1.00 | 1.00 | 1.00 | 0.73 |
+| 1500 | 256 | – | – | 1.00 | 1.00 | 0.99 | 0.65 |
+| 1500 | 512 | – | – | – | 0.98 | 0.96 | 0.50 |
+| 1908 | 64 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 0.70 |
+| 1908 | 128 | – | 1.00 | 1.00 | 1.00 | 1.00 | 0.72 |
+| 1908 | 256 | – | – | 1.00 | 1.00 | 0.99 | 0.62 |
+| 1908 | 512 | – | – | – | 0.96 | 0.95 | 0.41 |
+
+#### Exact match, placement `uniform`
+
+| step | n_copy | 256 | 512 | 1k | 2k | 4k | 8k |
+|---|---|---|---|---|---|---|---|
+| 500 | 64 | 0.74 | 0.81 | 0.86 | 0.78 | 0.39 | 0.00 |
+| 500 | 128 | – | 0.14 | 0.38 | 0.39 | 0.05 | 0.00 |
+| 500 | 256 | – | – | 0.00 | 0.01 | 0.00 | 0.00 |
+| 500 | 512 | – | – | – | 0.00 | 0.00 | 0.00 |
+| 1000 | 64 | 0.94 | 0.97 | 0.95 | 0.91 | 0.74 | 0.00 |
+| 1000 | 128 | – | 0.87 | 0.89 | 0.85 | 0.42 | 0.00 |
+| 1000 | 256 | – | – | 0.29 | 0.35 | 0.00 | 0.00 |
+| 1000 | 512 | – | – | – | 0.00 | 0.00 | 0.00 |
+| 1500 | 64 | 0.96 | 0.98 | 0.98 | 0.99 | 0.91 | 0.00 |
+| 1500 | 128 | – | 0.96 | 0.96 | 0.95 | 0.71 | 0.00 |
+| 1500 | 256 | – | – | 0.70 | 0.70 | 0.09 | 0.00 |
+| 1500 | 512 | – | – | – | 0.00 | 0.00 | 0.00 |
+| 1908 | 64 | 0.98 | 0.98 | 0.98 | 0.99 | 0.91 | 0.00 |
+| 1908 | 128 | – | 0.95 | 0.95 | 0.98 | 0.81 | 0.00 |
+| 1908 | 256 | – | – | 0.66 | 0.79 | 0.18 | 0.00 |
+| 1908 | 512 | – | – | – | 0.00 | 0.00 | 0.00 |
+
+n = 8 and 32 (omitted) behave like the earlier tables. At step 1908 their exact match is 0.98–1.00 for L ≤ 2k.
+
+#### Where the errors are (from `sc_samples.jsonl`)
+Token accuracy by answer index, plus mean wrong words per sequence, and accuracy on the word right after a wrong one:
+
+| step | cell | items 0–63 | 64–127 | 128–255 | 256–511 | wrong words | acc after a wrong word |
+|---|---|---|---|---|---|---|---|
+| 500 | L2k n512 | 0.94 | 0.89 | 0.86 | 0.80 | 80 | 0.75 |
+| 1500 | L2k n512 | 1.00 | 0.99 | 0.98 | 0.97 | 12 | 0.92 |
+| 1908 | L2k n256 | 1.00 | 1.00 | 1.00 | – | 0.2 | 1.00 |
+| 1908 | L2k n512 | 1.00 | 0.99 | 0.98 | 0.94 | 20 | 0.89 |
+| 1908 | L4k n512 | 0.95 | 0.93 | 0.93 | 0.97 | 23 | 0.88 |
+
+**Findings**
+- **Full attention extrapolates in n.** Within T, a model trained on n ≤ 64 copies 128 words as well as 64
+  (exact 0.95–0.98 at L ≤ 2k), and 256 at token accuracy ≥ 0.99. At n=512 it still gets ~0.96 of the words.
+  This matches the mechanism: under teacher forcing each answer word is a separate lookup ("find the previous
+  answer word in the body, copy the next content word"), which does not need memory that grows with n.
+- **Unlike length, it improves with training.** At L=2k, n=512, token accuracy rises from 0.84 (step 500) to
+  0.96–0.98, and exact match at n=256 rises from 0.01 to 0.79. Length generalization stays at 0 at every step.
+- **The degradation is gradual, not a cliff.** At L=2k, n=512, accuracy falls smoothly with answer index (1.00 at
+  items < 64 → 0.94 at items 256–511). Errors are scattered (~20 per 512-word answer) and do not cascade: the word
+  after a mistake is still right 89% of the time.
+- **At L=4k, n and distance interact.** At L=4k, n=512, the early and middle answer words are worse (0.93–0.95) than
+  the last ones (0.97). By distance from the source word to the end of the body, accuracy falls from 0.98 (< 1k)
+  to 0.93–0.95 (2k–4k). At n=64 the same distances show no effect (≥ 0.997), so long distances only hurt when there
+  are many words. Also, an L=4k, n=512 sequence is ~4.65k tokens, so the later answer words sit at positions past
+  T. For a clean capacity read, use L ≤ 2k.
+- **Exact match is the wrong capacity metric at large n.** 0.96 per word gives exact ≈ 0 over 512 words. For the
+  capacity axis, report token accuracy (or words recalled = n · token acc); keep exact match for n ≤ 64.
+- **What this sets up:** attention has no fixed-size memory, so a flat curve in n is expected here. The comparison
+  that matters is a recurrent or hybrid arm with a fixed-size state, trained on the same `train_T4096_cap512` data
+  (n log-uniform in 1..512).
+
+Token accuracy, n ∈ {128, 256, 512} vs L, plus capacity at L=2k (right):
+![n_copy token acc](initial_baseline_plots/sc_ncopy_token_acc.png)
+
+Exact match, same layout:
+![n_copy exact](initial_baseline_plots/sc_ncopy_exact.png)
+
+Regenerate:
+```bash
+D=~/datasets/synthetic/selective_copy R=~/runs/longctx/a0_pilot_1B
+python scripts/longctx/make_recipes.py test --fmt nl --template_splits train --ctx_lens 256 512 1024 2048 4096 8192 \
+  --placements uniform --tokenizer ~/models/Qwen3-0.6B-Base --out_dir $D/test_cap_nl_diag
+for s in 500 1000 1500 1908; do
+  torchrun --nproc_per_node 8 scripts/longctx/eval_longctx.py --model_path $R/checkpoints/global_step_$s/hf_ckpt \
+    --sc_test_dir $D/test_cap_nl_diag --out_dir $R/eval/step${s}_cap_nl
+done
+python scripts/longctx/plot_longctx.py --results $R/eval/step{500,1000,1500,1908}_cap_nl/results.json \
+  --labels "step 500" "step 1000" "step 1500" "step 1908" --train_len 4096 --metric token_acc \
+  --n_copies 128 256 512 --capacity_len 2048 --out initial_baseline_plots/sc_ncopy_token_acc.png
+```
+
 ## Notes
 - Held-out templates (not shown) give lower first-item accuracy that falls with training. Cause: every `nl` train
   prefix has exactly one colon, right before the body, and the model learned "the answer starts after the first
   colon". Fixed for future runs by the composed `nl2` templates (`6d5741f5`).
-- The next baseline should be trained on `train_T4096_nl2` and evaluated on `test_nl2` (train split primary).
+- The next baseline should be trained on `train_T4096_cap512` (nl2 templates, n log-uniform in 1..512, unique
+  content; the current `mix_fineweb_sc10.yaml`) and evaluated on `test_cap` (train split primary).
