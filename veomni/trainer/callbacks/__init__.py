@@ -23,6 +23,7 @@ from .channel_loss_callback import ChannelLossCallback, ChannelLossComputer
 from .checkpoint_callback import CheckpointCallback
 from .evaluate_callback import EvaluateCallback
 from .global_state_callback import GlobalStateCallback
+from .layer_stats_callback import LayerStatsCallback
 from .trace_callback import (
     RESERVED_TRAINING_METRIC_NAMES,
     EnvironMeterCallback,
@@ -40,6 +41,7 @@ __all__ = [
     "ChannelLossComputer",
     "CheckpointCallback",
     "GlobalStateCallback",
+    "LayerStatsCallback",
     "EvaluateCallback",
     "WandbTraceCallback",
     "ProfileTraceCallback",

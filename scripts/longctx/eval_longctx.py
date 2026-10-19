@@ -26,6 +26,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import veomni.models  # noqa: F401  (registers VeOmni-only model types, e.g. qwen3_hybrid, on the HF Auto classes)
 from veomni.data.synthetic import get_synthetic_task
 from veomni.ops.qat.ternary import ternarize_linears_
 

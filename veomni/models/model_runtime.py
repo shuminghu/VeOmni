@@ -26,7 +26,7 @@ share one build sequence instead of maintaining divergent copies of it.
 
 import os
 from dataclasses import fields
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import torch
 from transformers import PretrainedConfig
@@ -138,6 +138,7 @@ class VeOmniModelRuntime:
         self.model_name = model_name
         self.train_args = train
         self.model_assets = []
+        self._pre_clip_grad_hooks: List[Callable[[torch.nn.Module], None]] = []
         self.setup()
         with use_parallel_state(self.model_name):
             self._build_model()
@@ -651,11 +652,19 @@ class VeOmniModelRuntime:
             lr_start=opt.lr_start,
         )
 
+    def register_pre_clip_grad_hook(self, hook: Callable[[torch.nn.Module], None]) -> None:
+        """Call ``hook(model)`` in every :meth:`clip_grad_norm`, under this model's ParallelState, after the
+        backward of the whole step and before clipping: the one point every trainer passes with the raw gradients
+        of an optimizer step (e.g. per-layer gradient-norm logging)."""
+        self._pre_clip_grad_hooks.append(hook)
+
     def clip_grad_norm(self, max_norm: Optional[float] = None):
         """Clip this model's gradients under its own parallelism and return the norm."""
         if max_norm is None:
             max_norm = self.args.optimizer.max_grad_norm
         with use_parallel_state(self.model_name):
+            for hook in self._pre_clip_grad_hooks:
+                hook(self.model)
             return veomni_clip_grad_norm(self.model, max_norm)
 
     def build_checkpoint(self) -> None:
