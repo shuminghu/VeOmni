@@ -18,6 +18,11 @@ seen in training. That is the primary metric; held-out templates only measure pr
 - **Ternary weights cost loss, not copying.** At 1B tokens on the n ≤ 512 data, ternary (TWN) QAT ends 0.23 nats
   above bf16 on FineWeb NLL (3.53 vs 3.30), yet still copies up to 512 words within T at token accuracy ≈ 1.0. Only
   exact match drops (0.80 vs 0.95 at n=512). See [Ternary vs bf16](#ternary-vs-bf16-cap512-data-1b-tokens).
+- **RULER: only single-needle retrieval, and only within T.** On the standard RULER suite the Qwen3-S models reach
+  ≈100% on single-needle NIAH up to 2k, but ≈0 on every task with distractors or multiple steps. Past T they fail
+  even when the needle is close to the question (0% at 16k for needles < 3k tokens back): positions > T break the
+  model, not long lookback. Ternary loses most retrieval even within T (single-needle at 4k: 16% vs 88%), although
+  its NLL is only 0.23 nats worse. See [RULER](#ruler).
 
 ## Model
 | | |
@@ -393,6 +398,86 @@ torchrun --nproc_per_node 8 scripts/longctx/eval_longctx.py --model_path <step>/
 python scripts/longctx/plot_longctx.py --results <bf16>/eval/step1908/results.json <ternary>/eval/step1908/results.json \
   --labels bf16 "ternary (TWN)" --train_len 4096 --metric exact --n_copies 8 64 256 512 --capacity_len 2048 \
   --out initial_baseline_plots/ternary_vs_bf16_exact.png
+```
+
+## RULER
+The standard external long-context benchmark (Hsieh et al. 2024, NVIDIA/RULER), ported as `veomni.eval.ruler`
+(commit `effb9e31`): 13 tasks, i.e. 8 needle-in-a-haystack (NIAH) variants (retrieval), variable tracking (VT,
+multi-hop), common / frequent words extraction (CWE / FWE, aggregation), and SQuAD / HotpotQA multi-document QA.
+Unlike selective copy, the model has to find a fact *by key* in prose or among distractors, from an
+instruction-style prompt it never saw in training.
+
+**Setup**
+- Upstream templates, haystacks (Paul Graham essays, filler sentence, distractor needles), `base` template (the model
+  continues `input + answer_prefix`), greedy decoding, no stop words, upstream `string_match_all/part` scoring.
+  Length = prompt + tokens to generate, each prompt filled to that length to within ~0.5% (QA by whole documents).
+- 100 prompts per (task, length) (upstream: 500), L ∈ {1k, 2k, 4k, 8k, 16k, 32k, 64k}, Qwen3 tokenizer, seed 42:
+  `~/datasets/ruler/qwen3`. HotpotQA does not fit in 1k (its 10 paragraphs); 9 of its 2k prompts were dropped.
+- Differences from upstream generation (none changes what a prompt tests): one seeded RNG per sample; QA questions
+  in a seeded order, where upstream's first 100 SQuAD questions all come from one article; distractor keys never
+  equal the real key.
+- Models: the three step-1908 checkpoints above, plus **Qwen3-0.6B-Base** (trained to 32k) as a reference, which
+  also checks the pipeline. Runs: `~/runs/longctx/ruler/<model>/results.json` (+ `predictions.jsonl`).
+
+#### Average over the 13 tasks (%)
+
+| model | 1k | 2k | 4k | 8k | 16k | 32k | 64k |
+|---|---|---|---|---|---|---|---|
+| Qwen3-0.6B-Base (reference) | 90.4 | 83.9 | 79.9 | 72.4 | 66.8 | 58.9 | – |
+| A0 pilot, step 1908 | 27.3 | 23.3 | 18.7 | 3.3 | 0.9 | 0.5 | 0.0 |
+| cap512 bf16, step 1908 | 26.2 | 21.5 | 15.2 | 2.1 | 0.3 | 0.1 | 0.0 |
+| cap512 ternary, step 1908 | 14.1 | 7.2 | 3.6 | 0.3 | 0.2 | 0.0 | 0.0 |
+| cap512 bf16, step 500 | 2.5 | 1.5 | 0.9 | 0.9 | 0.6 | 0.3 | 0.1 |
+
+#### NIAH tasks the Qwen3-S models score on (%, L = 1k / 2k / 4k / 8k; 0 from 16k on)
+
+| model | single_1 (filler) | single_2 (essay) | single_3 (essay, uuid value) | multikey_1 | multivalue |
+|---|---|---|---|---|---|
+| Qwen3-0.6B-Base | 100/100/100/100 | 98/99/93/100 | 100/100/100/100 | 99/97/85/81 | 92/85/76/72 |
+| A0 pilot | 99/99/100/26 | 97/94/61/1 | 65/45/17/0 | 23/22/24/5 | 19/21/22/1 |
+| cap512 bf16 | 100/100/88/7 | 97/100/42/1 | 49/18/3/0 | 20/23/19/0 | 22/21/22/2 |
+| cap512 ternary | 89/56/16/0 | 40/10/4/1 | 0/0/0/0 | 15/14/5/0 | 16/8/8/0 |
+
+The other 8 tasks (multikey_2/3, multiquery, VT, CWE, FWE, QA ×2) are ≤ 14% for every Qwen3-S model at every length.
+
+**Findings**
+- **The reference behaves like published RULER numbers**: single NIAH ≈100 at all lengths; uuid keys among uuid
+  distractors (multikey_3) fall hardest (99 → 7 at 32k); CWE is the hardest task and non-monotone at short L; QA
+  (SQuAD / HotpotQA) 72 / 43 at 2k. So the generation, length fitting and scoring are sound.
+- **Qwen3-S does single-needle retrieval and nothing harder.** Every distractor or multi-step task is at the
+  floor at every length, a capability limit of a 310M model at 1B tokens, not a context effect. Failure modes from
+  `predictions.jsonl`: multikey_2 answers with a distractor's value; VT copies the variable names of its in-context
+  example; CWE / FWE loop on one word. At this scale RULER only separates models through NIAH single /
+  multikey_1 / multivalue.
+- **Past T the model breaks; it is not the lookback.** At L=16k, needles less than 3k tokens before the question
+  score 0 (A0, niah_single_1: 0 of 19). At 8k such needles are still found 64% of the time (23 / 36); needles
+  more than 4k back, never. From ~2T, outputs degenerate into filler loops ("The sky is blue. The sky is blue…"). It is the absolute
+  positions > T (RoPE θ=1e6, never trained past 4k) that fail, as in the positional-NLL rise past T.
+- **Within T, NIAH falls with needle distance**: A0 at L=4k hits 81% of needles < 64 tokens before the question
+  but 11% of those 2–4k back, while selective copy at 4k is ≈100% at every distance. The copy skill trained by SC
+  does not transfer to keyed retrieval in prose; the "magic number" needles are found mostly by recency.
+- **NIAH emerges after SC.** At step 500, bf16 already copies (SC exact 0.88 at n=8, L=2k) but scores 2.5% on RULER
+  at 1k (single_1: 9%).
+- **Ternary loses retrieval even within T**: single_1 89 / 56 / 16 at 1k / 2k / 4k vs bf16 100 / 100 / 88, and
+  single_3 (uuid values) 0 everywhere vs 49 at 1k. SC token accuracy is unchanged and NLL is only 0.23 nats worse, so
+  keyed retrieval is the most sensitive of our metrics to ternary weights.
+- A0 pilot ≥ cap512 bf16 on NIAH at 4k (single_1 100 vs 88, single_2 61 vs 42) despite bf16's richer SC data. One
+  seed each, so not conclusive; RULER on steps 1000 / 1500 is queued (`~/runs/longctx/ruler/run_ruler.sh`).
+
+Score vs length per task, the average, and NIAH hit rate vs needle distance (pooled over lengths); dotted line = T:
+![RULER step 1908](initial_baseline_plots/ruler_s1908.png)
+
+Reproduce:
+```bash
+# one-time: raw data (PG essays, SQuAD, HotpotQA) + prompts for the Qwen3 tokenizer (~15 min on 24 CPU workers)
+python scripts/longctx/ruler/download_ruler_data.py --out_dir ~/datasets/ruler/raw
+python scripts/longctx/ruler/prepare_ruler.py --tokenizer ~/models/Qwen3-0.6B-Base --raw_dir ~/datasets/ruler/raw \
+  --out_dir ~/datasets/ruler/qwen3 --lengths 1024 2048 4096 8192 16384 32768 65536 --workers 24
+# eval (~8-13 min per model on 8x H200; sdpa: FA2 + left-padded generate is broken under the VeOmni backend)
+torchrun --nproc_per_node 8 scripts/longctx/ruler/eval_ruler.py --model_path <step>/hf_ckpt \
+  --tokenizer_path ~/models/Qwen3-0.6B-Base --data_dir ~/datasets/ruler/qwen3 --out_dir <out> [--qat_weight ternary_twn]
+python scripts/longctx/ruler/plot_ruler.py --results <a>/results.json <b>/results.json --labels A B --train_len 4096 \
+  --out initial_baseline_plots/ruler_s1908.png
 ```
 
 ## Notes
