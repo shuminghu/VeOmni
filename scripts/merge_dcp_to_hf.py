@@ -11,6 +11,7 @@ from safetensors.torch import save_file
 from transformers import AutoConfig, AutoProcessor
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, WEIGHTS_INDEX_NAME, WEIGHTS_NAME
 
+import veomni.models  # noqa: F401  (registers VeOmni-only model types, e.g. qwen3_hybrid, so AutoConfig can load them)
 from veomni.checkpoint.dcp_checkpointer import _get_sharding_plan, _process_shard
 from veomni.checkpoint.layout import weights_dir
 from veomni.utils import helper

@@ -351,6 +351,7 @@ class EnvironMeter:
             "training/avg_effective_len": avg_effective_len,
             "training/avg_sample_seq_len": avg_sample_seq_len,
             "tokens_per_second(M)": tokens_per_second / 1e6,
+            "tokens_per_second_per_gpu": tokens_per_second / self.world_size,
             "consume_tokens(M)": self.consume_tokens / 1e6,
             "consume_tokens(B)": self.consume_tokens / 1e9,
             "consumed_chunk_num": self.consume_chunks,

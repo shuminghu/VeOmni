@@ -653,3 +653,56 @@ class TestDeepseekV4Flops:
         compressed_flops, _ = VeomniFlopsCounter(compressed_config).estimate_flops(batch_seqlens, delta_time=1.0)
 
         assert compressed_flops < baseline_flops
+
+
+def _qwen3_hybrid_config(layer_types):
+    from veomni.models.transformers.qwen3_hybrid.configuration_qwen3_hybrid import Qwen3HybridConfig
+
+    return Qwen3HybridConfig(
+        vocab_size=1000,
+        hidden_size=256,
+        intermediate_size=512,
+        num_hidden_layers=len(layer_types),
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        linear_num_heads=3,
+        linear_head_dim=64,
+        linear_value_head_dim=64,
+        layer_types=layer_types,
+    )
+
+
+def test_qwen3_hybrid_flops_reduce_to_qwen3_and_count_kda():
+    seqlens = [100, 300]
+    tokens = sum(seqlens)
+    all_attn = _qwen3_hybrid_config(["full_attention"] * 4)
+    hybrid_flops = VeomniFlopsCounter(all_attn)._estimate_qwen3_hybrid_flops(tokens, seqlens, 1.0)
+    dense = SimpleNamespace(
+        **{
+            k: getattr(all_attn, k)
+            for k in (
+                "hidden_size",
+                "num_attention_heads",
+                "num_key_value_heads",
+                "head_dim",
+                "intermediate_size",
+                "num_hidden_layers",
+                "vocab_size",
+            )
+        }
+    )
+    dense_counter = VeomniFlopsCounter(SimpleNamespace(model_type="qwen3", **vars(dense)))
+    dense_flops = dense_counter._compute_qwen_dense_text_flops(dense, tokens, seqlens) / 1e12
+    assert hybrid_flops == pytest.approx(dense_flops)
+
+    # Swapping one attention layer for KDA removes its attention terms and adds the KDA ones.
+    one_kda = _qwen3_hybrid_config(["linear_attention"] + ["full_attention"] * 3)
+    h, H, d, r = 256, 3, 64, 64
+    kda_N = h * (4 * H * d) + 2 * h * r + r * 2 * H * d + h * H + 4 * 3 * H * d
+    attn_N = h * (2 * 4 * 64 + 2 * 2 * 64)
+    expected = dense_flops * 1e12 + 6 * (kda_N - attn_N) * tokens
+    expected += -12 * sum(s * s for s in seqlens) * 64 * 4 + 15 * d * d * H * tokens
+    assert VeomniFlopsCounter(one_kda)._estimate_qwen3_hybrid_flops(tokens, seqlens, 1.0) == pytest.approx(
+        expected / 1e12
+    )
