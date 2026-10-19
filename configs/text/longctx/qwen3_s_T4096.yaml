@@ -57,6 +57,9 @@ train:
   channel_loss:
     enable: true
     interval: 10
+  layer_stats:
+    enable: true
+    interval: 10
   checkpoint:
     output_dir: /home/shu/runs/longctx/qwen3_s_T4096_sc10
     manager: dcp

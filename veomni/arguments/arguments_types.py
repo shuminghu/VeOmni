@@ -59,6 +59,7 @@ def _resolve_hdfs_path(path: Optional[str]) -> Optional[str]:
 #   ├── wandb.*              → WandbConfig
 #   ├── profile.*            → ProfileConfig
 #   ├── channel_loss.*       → ChannelLossConfig
+#   ├── layer_stats.*        → LayerStatsConfig
 #   └── checkpoint.*         → CheckpointConfig
 #
 # `accelerator` and `optimizer` sit under `model`, not `train`, because both are
@@ -384,6 +385,31 @@ class ProfileConfig:
             "help": "whether to profile rank0 only. When false, every rank will be profiled; Please expect many files to save, which can be slow and take a lot of disk space."
         },
     )
+
+
+@dataclass
+class LayerStatsConfig:
+    """train.layer_stats.* — Per-decoder-layer gradient norm and activation statistics."""
+
+    enable: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Log, per decoder layer, the pre-clip gradient L2 norm (grad_norm/layer_XX) and the RMS and "
+                "max |x| of the layer's output hidden states (act_rms/layer_XX, act_absmax/layer_XX). "
+                "Non-layer parameters (embeddings, final norm, lm_head) get grad_norm/<module path>. "
+                "Observability only; gradients and the objective are unchanged."
+            )
+        },
+    )
+    interval: int = field(
+        default=10,
+        metadata={"help": "Collect and log every N optimizer steps (and at step 1)."},
+    )
+
+    def __post_init__(self):
+        if self.interval < 1:
+            raise ValueError(f"train.layer_stats.interval must be >= 1, got {self.interval}.")
 
 
 @dataclass
@@ -1231,6 +1257,7 @@ class TrainingArguments:
     wandb: WandbConfig = field(default_factory=WandbConfig)
     profile: ProfileConfig = field(default_factory=ProfileConfig)
     channel_loss: ChannelLossConfig = field(default_factory=ChannelLossConfig)
+    layer_stats: LayerStatsConfig = field(default_factory=LayerStatsConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def __post_init__(self):

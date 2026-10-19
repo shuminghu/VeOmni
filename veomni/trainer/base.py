@@ -77,6 +77,7 @@ from .callbacks import (
     EnvironMeterCallback,
     EvaluateCallback,
     GlobalStateCallback,
+    LayerStatsCallback,
     MoERouterMonitorCallback,
     ProfileTraceCallback,
     TqdmCallback,
@@ -515,6 +516,7 @@ class BaseTrainer(Stateful, ABC):
         self.evaluate_callback = EvaluateCallback(trainer)
         self.moe_monitor_callback = MoERouterMonitorCallback(trainer)
         self.channel_loss_callback = ChannelLossCallback(trainer)
+        self.layer_stats_callback = LayerStatsCallback(trainer)
         # Ordered dispatch list. Callbacks own their ParallelState explicitly:
         # each captured it at construction (``Callback.parallel_state``), and
         # ChannelLossComputer receives that same cached state. Shared objects
@@ -528,6 +530,8 @@ class BaseTrainer(Stateful, ABC):
             self.environ_meter_callback,
             self.tqdm_callback,
             self.channel_loss_callback,
+            # Merges its per-layer metrics into the meter's step payload, so also before ``wandb``.
+            self.layer_stats_callback,
             self.wandb_callback,
             self.profile_callback,
             # Weights first, then the cursor: at resume the DCP load frees its

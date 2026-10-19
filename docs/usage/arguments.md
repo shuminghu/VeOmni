@@ -101,6 +101,7 @@ live on `model.*` — see the **Model** section above.
     * `WandbConfig` — `train.wandb.*`
     * `ProfileConfig` — `train.profile.*`
     * `ChannelLossConfig` — `train.channel_loss.*`
+    * `LayerStatsConfig` — `train.layer_stats.*`
     * `CheckpointConfig` — `train.checkpoint.*`
 
 ### VLM Extensions
@@ -262,6 +263,7 @@ NPU validation runs at two times:
 | rms_norm_gated_implementation | `str` | `"fla"` | Gated RMSNorm (Qwen3.5/Qwen4-Exp GatedDeltaNet `self.norm`). Known values: `eager`, `fla` (FLA `FusedRMSNormGated`; GPU, MLU, NPU), `torch_npu` (`npu_swiglu` for SiLU, eager gate multiply for sigmoid). |
 | causal_conv1d_implementation | `str` | `"fla"` | Varlen depthwise causal conv1d (Qwen3.5 GatedDeltaNet pre-mixer). Known values: `eager`, `fla` (GPU, MLU, NPU), `triton` (vendored Triton-Ascend; requires `triton-ascend`). `eager` does not support the varlen path. |
 | chunk_gated_delta_rule_implementation | `str` | `"fla"` | Chunk gated delta-rule kernel for Qwen3.5 linear attention. Known values: `eager`, `fla` (GPU, MLU, NPU), `flash_qla` (NVIDIA SM90-SM100), `triton` (vendored Triton-Ascend; requires `triton-ascend`), `fla_npu` (AscendC fused `torch.ops.npu.*`; requires `fla_npu` + `triton-ascend`). `eager` does not support varlen training. |
+| kda_implementation | `str` | `"fla"` | Kimi Delta Attention kernels (Qwen3-Hybrid): selects both `chunk_kda` (training) and `fused_recurrent_kda` (short-input inference). `fla` (CUDA Triton; needs flash-linear-attention >= 0.5, forward-only for `fused_recurrent_kda`) or `eager` (FP32 token recurrence, tests only). |
 | dsa_indexer_implementation | `Literal["eager", "cudnn", "cann", "tilelang"]` | `"eager"` | DeepSeek sparse-attention top-k indexer implementation. `tilelang` selects the DeepSeek-V4 Lightning Indexer kernel and requires an SM90+ CUDA GPU. `cann` selects the DeepSeek-V4 Ascend CANN Lightning Indexer and requires `cann_ops_transformer`; it covers unpacked and packed batches whose `position_ids` restart at 0 in every segment, without context or Ulysses parallelism or decode. |
 | dsa_attention_implementation | `Literal["eager", "flashmla_cudnn", "cann", "tilelang"]` | `"eager"` | DeepSeek sparse-attention implementation. `tilelang` selects the DeepSeek-V4 sparse MQA kernel and requires an SM90+ CUDA GPU. `cann` selects the DeepSeek-V4 Ascend CANN sparse FlashMLA and requires `cann_ops_transformer`; it covers the same unpacked and packed batches as the `cann` indexer, ignores `attention_mask` (so padded batches are unsupported), and runs layers that have no compressed rows in eager. |
 | mhc_implementation | `Literal["eager", "cann", "tilelang"]` | `"eager"` | DeepSeek V4 manifold-constrained Hyper-Connection implementation. `tilelang` enables the forward/backward path provided by the `tile-kernels` package and requires an SM90+ CUDA GPU. `cann` selects the Ascend CANN fused pre/post kernels with a PyTorch final-head collapse and requires BF16 activations and `cann_ops_transformer`. |
@@ -481,6 +483,7 @@ group or learning rate is therefore a recipe choice beyond the reference, not a 
 | wandb | `WandbConfig` | — | Weights & Biases logging. |
 | profile | `ProfileConfig` | — | Torch profiler settings. |
 | channel_loss | `ChannelLossConfig` | — | Detached per-channel causal-LM loss logging. |
+| layer_stats | `LayerStatsConfig` | — | Per-decoder-layer gradient norm and activation statistics. |
 | checkpoint | `CheckpointConfig` | — | Checkpoint saving and loading. |
 
 ### TorchCompileConfig
@@ -588,6 +591,23 @@ distinct from the first emission.
 | log_weighted_loss | `bool` | `True` | Log weighted loss metrics. |
 | log_token_count | `bool` | `True` | Log token-count metrics. |
 | strict | `bool` | `False` | Raise when source metadata is missing or cannot be aligned with packed segments; otherwise skip invalid batches. |
+
+### LayerStatsConfig
+
+`train.layer_stats.*` — Per-decoder-layer gradient norm and activation statistics.
+
+On step 1 and every `interval`-th step, logs `grad_norm/layer_XX` (pre-clip L2 norm of each decoder layer's
+accumulated gradient; non-layer parameters as `grad_norm/<module path>`, e.g. `grad_norm/lm_head`; the groups add up
+in quadrature to `training/grad_norm`), and `act_rms/layer_XX` / `act_absmax/layer_XX` (RMS and max `|x|` of each
+layer's output hidden states over all tokens, micro-batches and ranks). Decoder layers are the modules named
+`...layers.<i>`. Gradients are read in `VeOmniModelRuntime.clip_grad_norm` through
+`register_pre_clip_grad_hook`, so every trainer that clips through the runtime is covered; activation hooks skip
+activation-checkpoint recompute. Extra-parallel (EP) gradients are not supported.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| enable | `bool` | `False` | Enable per-layer stats logging. |
+| interval | `int` | `10` | Collect and log every N optimizer steps (and at step 1). |
 
 ### GradientCheckpointingConfig
 
