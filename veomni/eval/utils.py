@@ -63,6 +63,8 @@ def load_causal_lm(
     ternary-QAT latent weights, so ternarize the hidden linears to evaluate the model training saw."""
     from transformers import AutoModelForCausalLM
 
+    from .. import models  # noqa: F401  (registers VeOmni-only model types, e.g. qwen3_hybrid, on the HF Auto classes)
+
     model = AutoModelForCausalLM.from_pretrained(
         os.path.expanduser(model_path), dtype=torch.bfloat16, attn_implementation=attn_implementation
     ).to(device)
