@@ -48,8 +48,14 @@ def generate(model, tokenizer, prompts: List[List[int]], max_new_tokens: int, de
     for i, p in enumerate(prompts):
         input_ids[i, max_len - len(p) :] = torch.as_tensor(p)
         attention_mask[i, max_len - len(p) :] = 1
+    # use_cache explicitly: some checkpoints (early qwen3_hybrid) ship use_cache=false, and generate would then
+    # silently recompute the whole prefix at every step.
     config = GenerationConfig(
-        max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=pad_id, eos_token_id=tokenizer.eos_token_id
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        use_cache=True,
+        pad_token_id=pad_id,
+        eos_token_id=tokenizer.eos_token_id,
     )
     out = model.generate(
         input_ids=input_ids.to(device), attention_mask=attention_mask.to(device), generation_config=config
