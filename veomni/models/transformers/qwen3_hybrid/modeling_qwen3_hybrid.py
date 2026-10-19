@@ -49,8 +49,9 @@ from transformers.utils.output_capturing import capture_outputs
 from veomni.models.loss_utils import ForCausalLMLoss
 from veomni.models.utils.attention_utils import prepare_dense_attention_inputs
 from veomni.ops import VeomniOp
-from veomni.ops.config import resolve_op_impl
+from veomni.ops.config import get_ops_config, resolve_op_impl
 from veomni.utils.device import IS_NPU_AVAILABLE
+from veomni.utils.import_utils import is_package_available
 
 from .configuration_qwen3_hybrid import FULL_ATTENTION, LINEAR_ATTENTION, Qwen3HybridConfig
 
@@ -77,6 +78,19 @@ else:
 FUSED_RECURRENT_MAX_LEN = 64
 
 
+def resolve_kda_op_impl(field: str) -> str:
+    """Implementation for a KDA-layer op (``kda`` / ``causal_conv1d`` / ``rms_norm_gated``).
+
+    An installed ops config (training, tests) decides. Without one -- a standalone ``from_pretrained`` in eval /
+    generation scripts -- ``resolve_op_impl`` would return ``eager``, whose KDA is an FP32 token-by-token Python
+    recurrence (hours for a long-context eval), so take the ``OpsImplementationConfig`` default ``fla`` whenever FLA
+    and CUDA are available.
+    """
+    if get_ops_config() is not None:
+        return resolve_op_impl(field)
+    return "fla" if torch.cuda.is_available() and is_package_available("fla") else "eager"
+
+
 def _no_rope(query: torch.Tensor, key: torch.Tensor, cos: object, sin: object) -> tuple[torch.Tensor, torch.Tensor]:
     """Identity stand-in for the ``rope`` op: NoPE attention."""
     return query, key
@@ -90,7 +104,7 @@ class KDAGatedRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
         self.veomni_rms_norm_gated = VeomniOp(
-            "rms_norm_gated", "standard", resolve_op_impl("rms_norm_gated_implementation")
+            "rms_norm_gated", "standard", resolve_kda_op_impl("rms_norm_gated_implementation")
         )
 
     def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
@@ -147,9 +161,9 @@ class KimiDeltaAttention(nn.Module):
         self.o_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.veomni_causal_conv1d = VeomniOp(
-            "causal_conv1d", "standard", resolve_op_impl("causal_conv1d_implementation")
+            "causal_conv1d", "standard", resolve_kda_op_impl("causal_conv1d_implementation")
         )
-        kda_impl = resolve_op_impl("kda_implementation")
+        kda_impl = resolve_kda_op_impl("kda_implementation")
         self.veomni_chunk_kda = VeomniOp("chunk_kda", "standard", kda_impl)
         self.veomni_fused_recurrent_kda = VeomniOp("fused_recurrent_kda", "standard", kda_impl)
 
