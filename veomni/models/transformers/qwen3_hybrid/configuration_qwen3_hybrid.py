@@ -52,7 +52,12 @@ class Qwen3HybridConfig(Qwen3Config):
     linear_conv_kernel_dim: int = 4
     linear_gate_low_rank_dim: int | None = None
     linear_allow_neg_eigval: bool = False
-    use_cache: bool = False
+    use_cache: bool = True
+
+    @property
+    def number_of_conv_states(self) -> int:
+        """Short-conv states per KDA layer in the generation cache (q, k and v), read by ``DynamicCache``."""
+        return 3
 
     def __post_init__(self, **kwargs):
         if self.layer_types is None:
