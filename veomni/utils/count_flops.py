@@ -101,6 +101,7 @@ class VeomniFlopsCounter:
             # RMSNorm layers have minimal impact at the MFU and can be ignored.
             "qwen3": self._estimate_qwen2_flops,
             "seed_oss": self._estimate_seed_flops,
+            "qwen3_hybrid": self._estimate_qwen3_hybrid_flops,
             "qwen3_5": self._estimate_qwen3_5_family_flops,
             "qwen3_5_text": self._estimate_qwen3_5_family_flops,
             "qwen3_5_moe": self._estimate_qwen3_5_family_flops,
@@ -1073,6 +1074,51 @@ class VeomniFlopsCounter:
             * tokens_sum
             * num_gdn_layers
         )
+
+    def _estimate_qwen3_hybrid_flops(self, tokens_sum, batch_seqlens, delta_time):
+        """Qwen3-Hybrid: Qwen3 MLPs everywhere, Qwen3 attention on ``full_attention`` layers, KDA elsewhere.
+
+        Same conventions as the dense Qwen3 estimate (6 x params x tokens for fwd + bwd matmuls; quadratic
+        attention term ``12 * sum(s^2) * head_dim * heads`` per full-attention layer, NoPE or not) and as the
+        GatedDeltaNet recurrence term (``15 * d_k * d_v * heads`` per token, see
+        ``_compute_gdn_recurrence_flops``). KDA's per-channel decay only adds elementwise work, ignored here.
+
+        KDA projections per layer (``r`` = ``linear_gate_low_rank_dim`` or ``d_v``):
+            q_proj, k_proj: hidden -> H * d_k;  v_proj: hidden -> H * d_v;  o_proj: H * d_v -> hidden
+            f_proj: hidden -> r -> H * d_k (forget gate);  g_proj: hidden -> r -> H * d_v (output gate)
+            b_proj: hidden -> H (beta);  q/k/v depthwise short convs of width ``linear_conv_kernel_dim``
+        """
+        config = self.config
+        hidden = config.hidden_size
+        head_dim = getattr(config, "head_dim", hidden // config.num_attention_heads)
+        q_size = config.num_attention_heads * head_dim
+        kv_size = config.num_key_value_heads * head_dim
+        num_heads, d_k, d_v = config.linear_num_heads, config.linear_head_dim, config.linear_value_head_dim
+        key_dim, value_dim = num_heads * d_k, num_heads * d_v
+        rank = config.linear_gate_low_rank_dim or d_v
+
+        num_full = sum(t == "full_attention" for t in config.layer_types)
+        num_kda = sum(t == "linear_attention" for t in config.layer_types)
+        if num_full + num_kda != config.num_hidden_layers:
+            raise ValueError(f"Unsupported Qwen3-Hybrid layer_types: {sorted(set(config.layer_types))}.")
+
+        mlp_N = hidden * config.intermediate_size * 3
+        attn_N = hidden * (2 * q_size + 2 * kv_size)
+        kda_N = (
+            hidden * (2 * key_dim + 2 * value_dim)  # q, k, v, o
+            + hidden * rank * 2
+            + rank * (key_dim + value_dim)  # low-rank forget / output gates
+            + hidden * num_heads  # beta
+            + config.linear_conv_kernel_dim * (2 * key_dim + value_dim)  # short convs
+        )
+        lm_head_N = self._compute_lm_head_params(hidden, config.vocab_size)
+        base_N = mlp_N * config.num_hidden_layers + attn_N * num_full + kda_N * num_kda + lm_head_N
+
+        seqlen_square_sum = sum(seqlen * seqlen for seqlen in batch_seqlens)
+        attention_core = 12 * seqlen_square_sum * head_dim * config.num_attention_heads * num_full
+        kda_recurrence = 15 * d_k * d_v * num_heads * tokens_sum * num_kda
+        flops_all_token = 6 * base_N * tokens_sum + attention_core + kda_recurrence
+        return flops_all_token * (1.0 / delta_time) / 1e12
 
     @staticmethod
     def _compute_qsa_attention_score_sum(batch_seqlens, compress_ratio, token_budget):

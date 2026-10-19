@@ -286,3 +286,15 @@ def test_left_padding_matches_unpadded_prefill(no_tf32):
                 alone = model(input_ids=input_ids[i : i + 1, -n:]).last_hidden_state
                 same_kernel = (n <= 64) == (input_ids.shape[1] <= 64)
                 _assert_close_to_scale(batched[i : i + 1, -n:], alone, 1e-3 if same_kernel else 5e-3, f"seq{i}")
+
+
+@needs_fla_gpu
+def test_standalone_model_uses_fla_kernels():
+    """Without an installed ops config (eval / generation scripts calling from_pretrained), the KDA layer must not
+    fall back to the token-by-token eager reference."""
+    with ops_config_scope(None):
+        kda = KimiDeltaAttention(_tiny_config(), 0)
+    assert kda.veomni_chunk_kda.impl == "fla"
+    assert kda.veomni_fused_recurrent_kda.impl == "fla"
+    assert kda.veomni_causal_conv1d.impl == "fla"
+    assert kda.o_norm.veomni_rms_norm_gated.impl == "fla"
