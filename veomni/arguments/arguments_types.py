@@ -1573,6 +1573,15 @@ class OpsImplementationConfig:
             "A non-eager value on hardware without a matching backend raises when the model resolves its kernel."
         },
     )
+    kda_implementation: Literal["eager", "fla"] = field(
+        default="fla",
+        metadata={
+            "help": "Kimi Delta Attention kernels (Qwen3-Hybrid KDA layers): selects both chunk_kda (training) and "
+            "fused_recurrent_kda (short-input inference). 'fla' (default) uses the flash-linear-attention Triton "
+            "kernels (GPU), with varlen cu_seqlens; its fused_recurrent kernel is forward only. 'eager' is an FP32 "
+            "token recurrence for tests."
+        },
+    )
     qsa_attention_implementation: Literal["eager", "tilelang"] = field(
         default="eager",
         metadata={
