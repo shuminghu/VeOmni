@@ -30,7 +30,7 @@
   "sliding_window": null,
   "tie_word_embeddings": false,
   "torch_dtype": "bfloat16",
-  "use_cache": false,
+  "use_cache": true,
   "use_sliding_window": false,
   "vocab_size": 151936
 }

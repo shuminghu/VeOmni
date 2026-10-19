@@ -221,16 +221,31 @@ def _left_padded(lengths, vocab_size, device="cuda"):
 
 
 @needs_fla_gpu
-@pytest.mark.parametrize("lengths", [(5, 30, 17), (3, 130, 90)], ids=["recurrent_prefill", "chunk_prefill"])
-def test_cached_generate_matches_full_forward(lengths, no_tf32):
+@pytest.mark.parametrize(
+    "lengths,rtol",
+    # Short prompts: prefill, decode and the reference all run the fused-recurrent kernel (exact up to FP32).
+    # Long prompts: the reference runs the chunked kernel over the whole sequence while decode steps are recurrent,
+    # which differ by ~1e-3 (see test_padded_batch_matches_unpadded_in_eval).
+    [((5, 30, 17), 1e-5), ((3, 130, 90), 5e-3)],
+    ids=["recurrent_prefill", "chunk_prefill"],
+)
+def test_cached_generate_matches_full_forward(lengths, rtol, no_tf32):
     """Greedy ``generate`` (hybrid KV + KDA conv / recurrent cache) reproduces full no-cache forwards at every step
     on a left-padded batch."""
     with ops_config_scope(_gpu_ops()):
         torch.manual_seed(0)
         config = _tiny_config(pad_token_id=0, eos_token_id=None, bos_token_id=None)
+        assert config.use_cache  # generate inherits it: False would silently recompute the prefix every step
         model = Qwen3HybridForCausalLM(config).cuda().eval()
         input_ids, mask = _left_padded(lengths, config.vocab_size)
         new_tokens = 8
+        calls = []
+
+        def record(module, args, kwargs):
+            pkv = kwargs.get("past_key_values")
+            calls.append((kwargs["input_ids"].shape[1], pkv.get_seq_length() if pkv is not None else None))
+
+        handle = model.model.register_forward_pre_hook(record, with_kwargs=True)
         with torch.no_grad():
             out = model.generate(
                 input_ids=input_ids,
@@ -242,13 +257,18 @@ def test_cached_generate_matches_full_forward(lengths, no_tf32):
                 output_scores=True,
                 return_dict_in_generate=True,
             )
+            handle.remove()
             assert out.sequences.shape[1] == input_ids.shape[1] + new_tokens
+            # The cache is really used: one prefill of the prompt, then one token per step on top of the cache.
+            prompt_len = input_ids.shape[1]
+            assert calls[0] == (prompt_len, 0), calls[0]
+            assert calls[1:] == [(1, prompt_len + i) for i in range(new_tokens - 1)], calls
             full_mask = torch.cat([mask, mask.new_ones(len(lengths), new_tokens)], dim=1)
             # Teacher-force the reference on generate's own tokens, so near-ties cannot make the two diverge.
             ref = model(input_ids=out.sequences, attention_mask=full_mask, use_cache=False).logits.float()
         for step, scores in enumerate(out.scores):
             position = input_ids.shape[1] - 1 + step
-            _assert_close_to_scale(scores.float(), ref[:, position], 1e-3, f"step{step}")
+            _assert_close_to_scale(scores.float(), ref[:, position], rtol, f"step{step}")
 
 
 @needs_fla_gpu

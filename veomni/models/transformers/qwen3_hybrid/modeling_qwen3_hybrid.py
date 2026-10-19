@@ -52,7 +52,7 @@ from veomni.ops import VeomniOp
 from veomni.ops.config import resolve_op_impl
 from veomni.utils.device import IS_NPU_AVAILABLE
 
-from .configuration_qwen3_hybrid import LINEAR_ATTENTION, Qwen3HybridConfig
+from .configuration_qwen3_hybrid import FULL_ATTENTION, LINEAR_ATTENTION, Qwen3HybridConfig
 
 
 if IS_NPU_AVAILABLE:
@@ -281,7 +281,10 @@ class Qwen3HybridDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == LINEAR_ATTENTION:
             hidden_states = self.linear_attn(
-                hidden_states, attention_mask=padding_mask, cu_seqlens=linear_attn_cu_seqlens
+                hidden_states,
+                attention_mask=padding_mask,
+                cu_seqlens=linear_attn_cu_seqlens,
+                cache=past_key_values,
             )
         else:
             # SDPA / eager cannot read packed cu_seqlens: they get an isolating dense mask instead.
@@ -353,6 +356,10 @@ class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
         self.gradient_checkpointing = False
         self.post_init()
 
+    def _has_kv_cache(self, past_key_values: Cache | None) -> bool:
+        """Only attention layers track a sequence length; an all-KDA cache has none (positions are unused then)."""
+        return past_key_values is not None and FULL_ATTENTION in self.config.layer_types
+
     @merge_with_config_defaults
     @capture_outputs
     def forward(
@@ -369,26 +376,29 @@ class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        if use_cache and past_key_values is None:
-            # One cache layer per ``layer_types`` entry: DynamicLayer (KV) for full attention, LinearAttentionLayer
-            # (``config.number_of_conv_states`` conv windows + recurrent state) for KDA.
-            past_key_values = DynamicCache(config=self.config)
-        if position_ids is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
-            position_ids = position_ids.unsqueeze(0)
-
         # Packed (dyn_bsz) batches carry varlen metadata from the collator; KDA must restart its state at each
         # sample boundary exactly as flash attention does.
         linear_attn_cu_seqlens = kwargs.pop("linear_attn_cu_seq_lens_q", None)
         if linear_attn_cu_seqlens is None:
             linear_attn_cu_seqlens = kwargs.get("cu_seq_lens_q")
 
+        # A cache is only built for generation: not while training (nothing decodes from it) and not for packed
+        # (cu_seqlens) batches, whose samples cannot be continued one row at a time.
+        use_cache = bool(use_cache) and not self.training and linear_attn_cu_seqlens is None
+        if use_cache and past_key_values is None:
+            # One cache layer per ``layer_types`` entry: DynamicLayer (KV) for full attention, LinearAttentionLayer
+            # (``config.number_of_conv_states`` conv windows + recurrent state) for KDA.
+            past_key_values = DynamicCache(config=self.config)
+        if position_ids is None:
+            past_seen_tokens = past_key_values.get_seq_length() if self._has_kv_cache(past_key_values) else 0
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
+            position_ids = position_ids.unsqueeze(0)
+
         causal_mask = create_causal_mask(
             config=self.config,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            past_key_values=past_key_values,
+            past_key_values=past_key_values if self._has_kv_cache(past_key_values) else None,
             position_ids=position_ids,
         )
         hidden_states = inputs_embeds
