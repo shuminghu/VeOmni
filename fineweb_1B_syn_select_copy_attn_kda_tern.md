@@ -24,6 +24,10 @@ Selective-copy (SC) numbers use **training templates, uniform placement** unless
 - **Held-out prompt templates do not follow suit.** At L ≤ 2k, Qwen3-S ternary (0.82–0.90) beats both hybrids
   (0.67–0.71) and Qwen3-S bf16 (0.72–0.77). The hybrid is flat across lengths (0.65–0.71 up to 8k), so its gap is
   prompt transfer, not copying. One seed; not diagnosed.
+- **RULER agrees, within the model's (small) capability.** Both architectures only solve single-needle retrieval,
+  but the hybrid keeps it past T: niah_single_1 is 100 at 8k and 99 at 16k (Qwen3-S: 7 and 0), and the 13-task
+  average past T is 8.7 vs 0.6. Ternary costs the hybrid much less retrieval than it costs Qwen3-S (13-task average
+  within T: 18.7 vs 8.3). See [RULER](#ruler).
 - **The hybrid is slower per token at this size,** despite 21% fewer nominal FLOPs per token: 55.3k vs 62.6k
   tokens/s per GPU (bf16) and MFU 6.8% vs 8.7%. Likely kernel overhead at this small width (448-dim KDA
   projections, 7 heads); not profiled.
@@ -53,6 +57,25 @@ the training path. All are merged into `longctx-synth` (`219b9a15`).
 | KDA init | A_log = log U(1, 16), dt_bias = 0, short convs U(±1/√4); muP for every Linear |
 | Kernels | flash-linear-attention **0.5.2** Triton: `chunk_kda` (training, forward + backward, varlen `cu_seqlens` so packed documents never share state), `fused_recurrent_kda` (inference inputs ≤ 64 tokens, forward only), FLA causal conv1d and gated RMSNorm. VeOmni ops `chunk_kda` / `fused_recurrent_kda` (`veomni/ops/kernels/kda/`), with an FP32 token-recurrence `eager` reference for tests. |
 | Generation | HF `DynamicCache` built from `layer_types`: a KV cache on the 3 attention layers; on the KDA layers, the recurrent state plus the last 4 inputs of each q/k/v conv. Padded positions have their KDA inputs zeroed, so left padding leaves the state at exactly zero (needed by RULER's `generate`). |
+
+### Parameter budget vs Qwen3-S
+
+| | Qwen3-S | Qwen3-S-Hybrid | difference |
+|---|---|---|---|
+| Mixer per layer | attention: 1,572,992 | KDA: 1,543,623 | −29,369 (−1.9%) |
+| Mixers replaced | — | 9 of 12 (layers 3, 7, 11 keep the identical attention) | −264k total |
+| MLPs, norms | identical | identical | 0 |
+| Embedding + untied lm_head | 233.4M | 233.4M | 0 |
+| **Non-embedding** | **75.52M** | **75.25M** | **−0.35%** |
+| Total | 308.89M | 308.63M | −0.09% |
+| Ternarized (QAT arms) | 75.5M in 84 matrices | 75.18M in 129 matrices | more, smaller matrices (low-rank gates, β) |
+| FLOPs per token (fwd + bwd, 4k docs) | 1.61 G | 1.27 G | −21% (quadratic attention on 3 layers, not 12) |
+
+Attention mixer: q (768→768), k and v (768→256 each, 4 KV heads), o (768→768), q/k-norm. KDA mixer at head_dim 64
+(as attention): q/k/v/o at 7 × 64 = 448 dims, low-rank (64) forget and output gates, β projection, three width-4
+short convs, A_log, dt_bias. 7 heads is the closest match (−1.9%); 8 heads would be +11%. Checked by
+`tests/models/test_qwen3_hybrid.py::test_qwen3_s_hybrid_matches_qwen3_s_shape_and_params`. Parameters are matched;
+compute is not.
 
 **Ternary (TWN QAT)** is the same recipe as the Qwen3-S ternary run (`veomni/ops/qat/ternary.py`). It applies to
 every hidden `nn.Linear`, here **129 matrices, 75.18M parameters**: q/k/v/o, b_proj and the low-rank f/g gate
@@ -212,14 +235,88 @@ The hybrid learns the copy task earlier. Its train SC loss first drops below 1 n
 (bf16 / ternary) vs 0.0068 / 0.0244 for Qwen3-S. Final FineWeb channel loss is 3.241 / 3.437 vs 3.273 / 3.503: the
 bf16 runs are close, and the ternary gap is smaller for the hybrid.
 
+## RULER
+
+The standard keyed-retrieval benchmark (13 tasks, `veomni.eval.ruler`) on the same prompts the Qwen3-S checkpoints
+were scored on (`~/datasets/ruler/qwen3`: 100 prompts per (task, length), L ∈ {1k … 64k}, `base` template, greedy
+decoding, upstream scoring). Setup and task descriptions are in
+[`initial_baseline.md` → RULER](initial_baseline.md#ruler); the Qwen3-S rows are those runs. The hybrid checkpoints
+ran through the same `eval_ruler.py` command, with HF `generate`, sdpa for the attention layers, and FLA kernels
+plus the generation cache for KDA (`~/runs/longctx/ruler/run_ruler_hybrid.sh`, about 10 min per checkpoint on 8×
+H200, like Qwen3-S). Since the Qwen3-S runs, the eval code only gained an explicit `use_cache=True` and the
+`qwen3_hybrid` model-type registration; prompts and scoring are unchanged.
+
+#### 13-task average (%), step 1908
+
+| model | 1k | 2k | 4k | 8k | 16k | 32k | 64k |
+|---|---|---|---|---|---|---|---|
+| Qwen3-S bf16 | 26.2 | 21.5 | 15.2 | 2.1 | 0.3 | 0.1 | 0.0 |
+| Qwen3-S ternary | 14.1 | 7.2 | 3.6 | 0.3 | 0.2 | 0.0 | 0.0 |
+| Hybrid bf16 | **27.7** | **22.8** | **19.3** | **16.4** | **9.3** | **6.2** | **2.8** |
+| Hybrid ternary | 20.4 | 19.2 | 16.4 | 14.1 | 7.8 | 2.7 | 1.1 |
+| Qwen3-0.6B-Base (reference, trained to 32k) | 90.4 | 83.9 | 79.9 | 72.4 | 66.8 | 58.9 | – |
+
+#### Tasks that score above the floor (%, L = 1k / 2k / 4k / 8k / 16k / 32k / 64k), step 1908
+
+| task | Qwen3-S bf16 | Qwen3-S ternary | Hybrid bf16 | Hybrid ternary |
+|---|---|---|---|---|
+| niah_single_1 (filler haystack) | 100/100/88/7/0/0/0 | 89/56/16/0/0/0/0 | 100/100/100/100/99/75/31 | 100/99/97/93/80/26/5 |
+| niah_single_2 (essay haystack) | 97/100/42/1/0/0/0 | 40/10/4/1/0/0/0 | 100/100/92/66/4/0/0 | 86/85/55/33/4/0/0 |
+| niah_single_3 (uuid values) | 49/18/3/0/0/0/0 | 0/0/0/0/0/0/0 | 61/19/3/0/0/0/0 | 4/2/2/0/0/0/0 |
+| niah_multikey_1 | 20/23/19/0/0/0/0 | 15/14/5/0/0/0/0 | 30/27/22/28/9/0/0 | 17/23/18/20/2/0/0 |
+| niah_multivalue | 22/21/22/2/0/0/0 | 16/8/8/0/0/0/0 | 23/24/17/12/4/0/0 | 23/23/22/18/1/0/0 |
+| fwe | 4/3/1/4/3/2/0 | 1/0/2/0/0/0/0 | 1/1/2/1/0/0/0 | 7/7/9/13/12/8/8 |
+
+The other 7 tasks (multikey_2/3, multiquery, VT, CWE, QA ×2) are ≤ 16% for every model at every length (full
+per-task table: `~/runs/longctx/ruler/hybrid_vs_qwen3_tables.md`).
+
+#### Over training (13-task average %; niah_single_1 %)
+
+| model | step | avg, L ≤ 4k | avg, L > 4k | niah_single_1 @ 4k | @ 16k |
+|---|---|---|---|---|---|
+| Qwen3-S bf16 | 1000 / 1500 / 1908 | 15.1 / 20.1 / 21.0 | 0.3 / 0.7 / 0.6 | 67 / 93 / 88 | 0 / 0 / 0 |
+| Qwen3-S ternary | 1000 / 1500 / 1908 | 2.2 / 5.8 / 8.3 | 0.4 / 0.8 / 0.1 | 2 / 8 / 16 | 0 / 0 / 0 |
+| Hybrid bf16 | 1000 / 1500 / 1908 | 23.9 / 22.2 / 23.3 | 5.4 / 9.8 / 8.7 | 95 / 100 / 100 | 74 / 99 / 99 |
+| Hybrid ternary | 1000 / 1500 / 1908 | 11.4 / 15.5 / 18.7 | 4.7 / 7.0 / 6.4 | 74 / 99 / 97 | 57 / 91 / 80 |
+
+At step 500 every model's 13-task average is ≤ 5.0 at every length.
+
+![RULER by task](fineweb_1B_syn_select_copy_attn_kda_tern_plots/ruler_tasks.png)
+
+![RULER over training](fineweb_1B_syn_select_copy_attn_kda_tern_plots/ruler_over_training.png)
+
+**Findings**
+- **Same capability ceiling, longer reach.** Like Qwen3-S, the hybrid only does single-needle retrieval: every
+  task with distractors, multiple keys or multiple steps stays near the floor at every length. It is a capacity
+  limit at 75M non-embedding parameters and 1B tokens, not a context effect; the 0.6B reference scores well above
+  the floor on all of them.
+  What changes is length. niah_single_1 stays at 99–100 up to 16k (bf16), against 7 at 8k for Qwen3-S, and
+  the 13-task average past T is 8.7 vs 0.6.
+- **Within T it is close.** The 13-task average at L ≤ 4k is 23.3 vs 21.0 (bf16), almost all from the NIAH
+  single / multikey_1 tasks. Both models remain recency-biased within T: pooled over the NIAH tasks at L = 4k,
+  needles 2–4k tokens before the question are found 16% (hybrid) and 8% (Qwen3-S) of the time, vs 44% and 39% for
+  needles ≤ 64 tokens back.
+- **The hybrid degrades gradually past T.** Hybrid bf16 single_1 goes 100 → 99 → 75 → 31 over 8k → 64k, and
+  single_2 (essay haystack, harder) falls from 92 at 4k to 66 at 8k and 4 at 16k. Qwen3-S is at or near the floor
+  on every task from 8k = 2T on (≤ 7%), the absolute-position failure (RoPE positions never trained) described in
+  the baseline.
+- **Ternary hurts the hybrid far less on retrieval.** Hybrid ternary keeps single_1 ≥ 93 up to 8k, where ternary
+  Qwen3-S has 89 / 56 / 16 at 1k / 2k / 4k. Its 13-task average within T is 18.7 vs 8.3. Ternary still costs the
+  hybrid most at long range (single_1 at 32k: 26 vs 75) and on uuid values (single_3: 4 vs 61 at 1k). This mirrors
+  selective copy, where ternary mostly costs long-gap item order.
+- **Retrieval appears by step 1000 for the hybrid** (bf16 single_1 at 16k: 74 at step 1000, 99 at 1500), and is
+  stable or slightly down from 1500 to 1908 (32k: 75 at 1908).
+- Oddity: hybrid ternary is the only model above the floor on FWE (frequent-words extraction, 7–13% at every
+  length). One seed; not investigated.
+
 ## Caveats
 - One seed per arm and a single 1B-token budget at 75M non-embedding parameters.
 - The Qwen3-S pair ran at commit `6bd6eeaf` (offline wandb, no per-layer stats); the hybrid pair at `fd8aaa07` /
   `746aab53`. The training recipe is identical; only the logging differs.
 - Throughput: the hybrid ternary run used FLA's on-disk autotune cache (possibly tuned while GPUs were shared); the
   hybrid bf16 run used `FLA_CACHE_RESULTS=0`. The Qwen3-S runs used no FLA kernels.
-- Evaluation is teacher-forced: SC exact match asks whether every answer token is the argmax given the correct prefix.
-  Generation-based long-context results (RULER) for the hybrids are not run yet (the generation cache is ready).
+- Selective copy and NLL are teacher-forced (SC exact match: every answer token is the argmax given the correct
+  prefix); RULER is generation-based (greedy, with the generation cache).
 
 ## Reproduce
 
@@ -244,3 +341,14 @@ python scripts/longctx/plot_compare_runs.py --out_dir fineweb_1B_syn_select_copy
   --run "Hybrid ternary" ~/runs/longctx/hybrid_pair_1B/ternary "#eb6834" dashed s
 ```
 The whole pair (both arms, merges, evals) is `~/runs/longctx/hybrid_pair_1B/run.sh` followed by `run2.sh`.
+RULER (same prompts and command as the Qwen3-S runs; `~/runs/longctx/ruler/run_ruler_hybrid.sh` for all 8 hybrid
+checkpoints):
+```bash
+torchrun --nproc_per_node 8 scripts/longctx/ruler/eval_ruler.py --model_path <run>/checkpoints/global_step_<N>/hf_ckpt \
+  --tokenizer_path ~/models/Qwen3-0.6B-Base --data_dir ~/datasets/ruler/qwen3 --out_dir ~/runs/longctx/ruler/<name> \
+  [--qat_weight ternary_twn]
+# RULER figures + tables: add to the plot_compare_runs.py command above
+  --only_ruler --ruler "$R/pair_bf16_s{step}/results.json" "$R/pair_ternary_s{step}/results.json" \
+  "$R/hyb_bf16_s{step}/results.json" "$R/hyb_ternary_s{step}/results.json" \
+  --ruler_ref "Qwen3-0.6B-Base" $R/qwen3_0.6b_base/results.json      # R=~/runs/longctx/ruler
+```

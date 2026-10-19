@@ -10,6 +10,10 @@ marker fill, e.g. architecture x precision:
         --run "Hybrid bf16" ~/runs/longctx/hybrid_pair_1B/bf16 "#eb6834" solid s \
         --run "Hybrid ternary" ~/runs/longctx/hybrid_pair_1B/ternary "#eb6834" dashed s
 
+RULER figures (optional): ``--ruler`` gives one results.json path template per ``--run`` (same order), with ``{step}``
+for the checkpoint, e.g. ``~/runs/longctx/ruler/pair_bf16_s{step}/results.json``; ``--ruler_ref LABEL PATH`` adds a
+neutral reference line (e.g. a pretrained model).
+
 Selective-copy panels use one template split and placement (default: train templates, uniform placement).
 LINESTYLE is a matplotlib name (``solid``, ``dashed``, ``dotted``); non-solid styles draw hollow markers so precision is readable without color.
 """
@@ -327,6 +331,132 @@ def throughput_table(runs, skip_steps=50) -> str:
     return "\n".join(lines)
 
 
+RULER_REF_STYLE = dict(color="#8a8984", linestyle="dotted", marker="^", markerfacecolor="#8a8984", markeredgewidth=0)
+
+
+def load_ruler(template: str, step: int) -> Optional[dict]:
+    path = os.path.expanduser(template.format(step=step))
+    return json.load(open(path)) if os.path.exists(path) else None
+
+
+def niah_distance_curve(result, min_dist=64):
+    """Hit rate of each needle vs its distance from the question, pooled over lengths."""
+    pooled = {}
+    for bins in result.get("niah_by_distance", {}).values():
+        for b, v in bins.items():
+            hits, n = pooled.get(int(b), (0.0, 0))
+            pooled[int(b)] = (hits + v["acc"] * v["n"], n + v["n"])
+    xs = sorted(b for b in pooled if b >= min_dist)
+    return xs, [pooled[b][0] / pooled[b][1] for b in xs]
+
+
+def ruler_series(runs, templates, ref, step):
+    series = [(r.style(), load_ruler(t, step)) for r, t in zip(runs, templates)]
+    if ref is not None:
+        series.append(({**RULER_REF_STYLE, "label": ref[0]}, json.load(open(os.path.expanduser(ref[1])))))
+    return [(st, res) for st, res in series if res is not None]
+
+
+def fig_ruler_tasks(runs, templates, ref, step, train_len, out, ncols=5):
+    series = ruler_series(runs, templates, ref, step)
+    tasks = list(dict.fromkeys(t for _, res in series for t in res["scores"]))
+    panels = ["average"] + tasks + ["niah_by_distance"]
+    nrows = (len(panels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.0 * ncols, 2.6 * nrows), squeeze=False, sharey=True)
+    lengths = sorted({int(L) for _, res in series for row in res["scores"].values() for L in row})
+    for ax, panel in zip(axes.flat, panels):
+        for st, res in series:
+            if panel == "niah_by_distance":
+                xs, ys = niah_distance_curve(res)
+            else:
+                row = res["average"] if panel == "average" else res["scores"].get(panel, {})
+                xs = sorted(int(L) for L, v in row.items() if v is not None)
+                ys = [row[str(L)] for L in xs]
+            ax.plot(xs, ys, **{**st, "markersize": 4, "linewidth": 1.6})
+        if panel == "niah_by_distance":
+            ax.set_title("NIAH hit rate vs needle distance", fontsize=9)
+            log2_axis(ax, [2**k for k in range(6, 17, 2)])
+            ax.set_xlabel("tokens from needle to question", fontsize=8)
+        else:
+            ax.set_title("average (13 tasks)" if panel == "average" else panel, fontsize=9)
+            log2_axis(ax, lengths[::2] if len(lengths) > 4 else lengths)
+            mark_train_len(ax, train_len)
+        ax.set_ylim(-3, 103)
+        ax.tick_params(labelsize=8)
+    for ax in axes.flat[len(panels) :]:
+        ax.set_visible(False)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("score (%)")
+    handles = [plt.Line2D([], [], **st) for st, _ in series]
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(f"RULER by task and length, step {step} (dotted: training length)", color=INK, fontsize=12)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def fig_ruler_training(runs, templates, steps, train_len, out):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.5), sharey=True)
+    for r, t in zip(runs, templates):
+        rows = [(s, load_ruler(t, s)) for s in steps]
+        rows = [(s, res) for s, res in rows if res is not None]
+        xs = [s for s, _ in rows]
+
+        def avg(res, keep):
+            v = [x for L, x in res["average"].items() if x is not None and keep(int(L))]
+            return float(np.mean(v)) if v else float("nan")
+
+        axes[0].plot(xs, [avg(res, lambda L: L <= train_len) for _, res in rows], **r.style())
+        axes[1].plot(xs, [avg(res, lambda L: L > train_len) for _, res in rows], **r.style())
+        axes[2].plot(xs, [res["scores"]["niah_single_1"].get(str(train_len)) for _, res in rows], **r.style())
+    axes[0].set_title(f"13-task average, L ≤ T (1k–{short(train_len)})")
+    axes[1].set_title(f"13-task average, L > T ({short(2 * train_len)}–64k)")
+    axes[2].set_title(f"niah_single_1 at L = {short(train_len)}")
+    for ax in axes:
+        ax.set_xlabel("training step")
+        ax.set_xticks(steps)
+    axes[0].set_ylabel("score (%)")
+    legend_below(fig, runs)
+    fig.suptitle("RULER over training", color=INK, fontsize=12)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def ruler_tables(runs, templates, ref, step) -> str:
+    series = [(r.label, load_ruler(t, step)) for r, t in zip(runs, templates)]
+    if ref is not None:
+        series.append((ref[0] + " (reference)", json.load(open(os.path.expanduser(ref[1])))))
+    series = [(label, res) for label, res in series if res is not None]
+    lengths = sorted({int(L) for _, res in series for L in res["average"]})
+
+    def row(label, values):
+        return f"| {label} | " + " | ".join("–" if v is None else f"{v:.1f}" for v in values) + " |"
+
+    out = [
+        f"RULER 13-task average (%), step {step}",
+        "",
+        "| model | " + " | ".join(short(L) for L in lengths) + " |",
+        "|---|" + "---|" * len(lengths),
+    ]
+    out += [row(label, [res["average"].get(str(L)) for L in lengths]) for label, res in series]
+    tasks = list(dict.fromkeys(t for _, res in series for t in res["scores"]))
+    out += [
+        "",
+        f"Per task (%), step {step}, L = " + " / ".join(short(L) for L in lengths),
+        "",
+        "| task | " + " | ".join(label for label, _ in series) + " |",
+        "|---|" + "---|" * len(series),
+    ]
+    for t in tasks:
+        cells = []
+        for _, res in series:
+            sc = res["scores"].get(t, {})
+            cells.append("/".join("–" if sc.get(str(L)) is None else f"{sc[str(L)]:.0f}" for L in lengths))
+        out.append(f"| {t} | " + " | ".join(cells) + " |")
+    return "\n".join(out)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run", nargs=5, action="append", required=True, metavar=("LABEL", "DIR", "COLOR", "LS", "MARKER"))
@@ -338,11 +468,22 @@ def main():
     p.add_argument("--placement", default="uniform")
     p.add_argument("--n_copies", type=int, nargs="+", default=[8, 32, 64, 128, 256, 512])
     p.add_argument("--capacity_lens", type=int, nargs="+", default=[2048, 4096, 8192, 16384])
+    p.add_argument("--ruler", nargs="+", default=None, help="RULER results.json templates ({step}), one per --run.")
+    p.add_argument("--ruler_ref", nargs=2, default=None, metavar=("LABEL", "PATH"))
+    p.add_argument("--only_ruler", action="store_true", help="Skip the eval_longctx / training figures.")
     args = p.parse_args()
 
     runs = [Run(label, os.path.expanduser(d), c, ls, m) for label, d, c, ls, m in args.run]
     os.makedirs(args.out_dir, exist_ok=True)
     o = lambda name: os.path.join(args.out_dir, name)  # noqa: E731
+    if args.ruler:
+        if len(args.ruler) != len(runs):
+            raise ValueError(f"--ruler needs one template per --run ({len(runs)}), got {len(args.ruler)}")
+        fig_ruler_tasks(runs, args.ruler, args.ruler_ref, args.step, args.train_len, o("ruler_tasks.png"))
+        fig_ruler_training(runs, args.ruler, args.steps, args.train_len, o("ruler_over_training.png"))
+        print(ruler_tables(runs, args.ruler, args.ruler_ref, args.step))
+    if args.only_ruler:
+        return
     fig_nll(runs, args.step, args.train_len, o("nll.png"))
     for metric in ("exact", "first_item_acc"):
         fig_sc_by_len(
