@@ -15,6 +15,9 @@ seen in training. That is the primary metric; held-out templates only measure pr
 - **n_copy generalizes; length does not.** Trained with n ≤ 64, the model still copies 128–256 words almost
   perfectly within T (exact 0.95–0.98 at n=128, token acc ≥ 0.99 at n=256), and 512 words at 0.96 per word. Unlike
   length, this improves with training. See [n_copy generalization](#n_copy-generalization).
+- **Ternary weights cost loss, not copying.** At 1B tokens on the n ≤ 512 data, ternary (TWN) QAT ends 0.23 nats
+  above bf16 on FineWeb NLL (3.53 vs 3.30), yet still copies up to 512 words within T at token accuracy ≈ 1.0. Only
+  exact match drops (0.80 vs 0.95 at n=512). See [Ternary vs bf16](#ternary-vs-bf16-cap512-data-1b-tokens).
 
 ## Model
 | | |
@@ -283,6 +286,113 @@ done
 python scripts/longctx/plot_longctx.py --results $R/eval/step{500,1000,1500,1908}_cap_nl/results.json \
   --labels "step 500" "step 1000" "step 1500" "step 1908" --train_len 4096 --metric token_acc \
   --n_copies 128 256 512 --capacity_len 2048 --out initial_baseline_plots/sc_ncopy_token_acc.png
+```
+
+## Ternary vs bf16 (cap512 data, 1B tokens)
+Two new runs, identical except for `model.qat.weight`: bf16, and ternary weights via TWN quantization-aware training.
+
+**What ternary means here** (`veomni/ops/qat/ternary.py`, commit `6bd6eeaf`): each row of every hidden
+`nn.Linear` (q/k/v/o, gate/up/down; 84 matrices, 75.5M parameters) is used in the forward as α·{−1, 0, +1}. Entries
+with |w| ≤ 0.7·mean|w| of the row become 0 (~42% of them), and α is the mean |w| of the rest. Gradients reach the latent
+full-precision weights unchanged (straight-through estimator). Embeddings, lm_head and norms stay bf16, and
+activations are not quantized. Checkpoints hold the latent weights, so evals ternarize at load (`--qat_weight
+ternary_twn`).
+
+Ternarizing the bf16 pilot *after* training (no QAT) destroys it: NLL 3.30 → 6.12 and SC accuracy → 0, whether the
+scale is per row or per 128-weight group. Ternary weights have to be trained.
+
+**Setup** (differs from the pilot above in data only):
+- Training data: `mix_fineweb_sc10.yaml` → `train_T4096_cap512`. Same mix (90/10), but SC uses n_copy log-uniform in
+  1..512 (no repeated words) and the composed `nl2` templates.
+- Same model, optimizer and schedule as the pilot: 1,908 steps ≈ 1B tokens, Muon lr 0.02. A 200-step sweep put the
+  ternary optimum at Muon lr 0.02–0.04 (0.01: 5.21, 0.02: 4.99, 0.04: 5.01, 0.08: 5.15 FineWeb loss; bf16 4.81).
+- Run dir `~/runs/longctx/qat_pair_1B/` (`run.sh`; tables `pair_tables.md` from `pair_tables.py`). Each run took
+  ~41 min on 8× H200; fake quantization adds ~10% per step.
+- Eval: `test_cap` (`nl2` templates; L ∈ {256 … 32k} × n ∈ {8 … 512}, cells with L < 4n skipped; 128 instances per
+  cell) and the same FineWeb positional NLL sets. SC numbers below use **train templates, uniform placement**.
+
+#### FineWeb-Edu held-out NLL (bf16 / ternary)
+
+| step | mean NLL, L=4k set | [2k,4k) | [4k,8k) | [8k,16k) | [16k,32k) |
+|---|---|---|---|---|---|
+| 500 | 3.79 / 4.08 | 3.84 / 4.14 | 3.88 / 4.17 | 4.01 / 4.28 | 4.23 / 4.44 |
+| 1000 | 3.48 / 3.73 | 3.53 / 3.78 | 3.59 / 3.82 | 3.75 / 3.95 | 4.08 / 4.19 |
+| 1500 | 3.34 / 3.58 | 3.39 / 3.63 | 3.46 / 3.69 | 3.65 / 3.84 | 4.06 / 4.14 |
+| 1908 | **3.30 / 3.53** | 3.34 / 3.58 | 3.42 / 3.63 | 3.63 / 3.78 | 4.08 / 4.09 |
+
+Bins past 4k come from the L=32k set (same docs in every bin).
+
+#### Selective copy, step 1908: exact match (bf16 / ternary)
+
+| n_copy | 256 | 512 | 1k | 2k | 4k | 8k |
+|---|---|---|---|---|---|---|
+| 8 | 1.00 / 0.99 | 1.00 / 0.98 | 0.99 / 0.98 | 0.98 / 0.94 | 0.89 / 0.73 | 0.00 / 0.00 |
+| 32 | 1.00 / 0.98 | 1.00 / 0.98 | 0.98 / 0.98 | 0.98 / 0.96 | 0.91 / 0.66 | 0.00 / 0.00 |
+| 64 | 0.98 / 0.98 | 1.00 / 0.98 | 0.99 / 0.99 | 0.99 / 0.90 | 0.88 / 0.74 | 0.00 / 0.00 |
+| 128 | – | 0.98 / 0.98 | 0.98 / 0.96 | 0.98 / 0.95 | 0.89 / 0.60 | 0.00 / 0.00 |
+| 256 | – | – | 0.99 / 0.95 | 0.98 / 0.90 | 0.84 / 0.67 | 0.00 / 0.00 |
+| 512 | – | – | – | 0.95 / 0.80 | 0.73 / 0.52 | 0.00 / 0.00 |
+
+#### Selective copy, step 1908: token accuracy (bf16 / ternary)
+
+| n_copy | 256 | 512 | 1k | 2k | 4k | 8k | 16k |
+|---|---|---|---|---|---|---|---|
+| 8 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 0.99 | 0.99 / 0.96 | 0.35 / 0.29 | 0.00 / 0.01 |
+| 64 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 0.70 / 0.50 | 0.04 / 0.01 |
+| 256 | – | – | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 0.82 / 0.66 | 0.09 / 0.03 |
+| 512 | – | – | – | 1.00 / 1.00 | 1.00 / 1.00 | 0.82 / 0.73 | 0.13 / 0.04 |
+
+#### Capacity over training: exact match at L=2k (bf16 / ternary)
+
+| step | n=8 | 32 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|---|
+| 500 | 0.88 / 0.00 | 0.76 / 0.00 | 0.79 / 0.00 | 0.72 / 0.00 | 0.66 / 0.00 | 0.36 / 0.00 |
+| 1000 | 0.96 / 0.91 | 0.95 / 0.90 | 0.94 / 0.79 | 0.98 / 0.84 | 0.97 / 0.80 | 0.84 / 0.43 |
+| 1500 | 0.97 / 0.92 | 0.98 / 0.92 | 0.98 / 0.90 | 0.98 / 0.93 | 0.97 / 0.87 | 0.93 / 0.77 |
+| 1908 | 0.98 / 0.94 | 0.98 / 0.96 | 0.99 / 0.90 | 0.98 / 0.95 | 0.98 / 0.90 | 0.95 / 0.80 |
+
+**Findings**
+- **NLL: ternary is 0.23 nats worse at 1B tokens, and the gap closes slowly** (0.29 → 0.25 → 0.24 → 0.23 at steps
+  500 → 1908). Ternary at step 1908 (3.53) matches bf16 at ~step 900 (interpolating 3.79 at 500 and 3.48 at
+  1000), so it needs roughly 2× the tokens for the same NLL at this size (75.5M non-embedding parameters).
+- **Copying survives ternary weights.** Within T, token accuracy is ≈ 1.0 for every n up to 512, the same as
+  bf16. Ternary loses per-item reliability, which exact match amplifies: 0.80 vs 0.95 at n=512, L=2k, and
+  0.52–0.74 vs 0.73–0.91 at L=4k. This fits the copy mechanism living in attention over activations (the KV cache),
+  which ternary weights don't touch.
+- **Ternary learns the task later.** Train SC loss collapses at step ~600 vs ~430 for bf16, and its final SC loss
+  is 0.022 vs 0.009. Its step-500 checkpoint is still pre-transition (exact 0 everywhere).
+- **Neither generalizes in length.** Exact match is 0 at L=8k for both, and ternary's token accuracy past T is
+  lower. Ternary's NLL rises less past T (+0.51 from [2k,4k) to [16k,32k), vs +0.74 for bf16), but only because its
+  in-T NLL is worse: both end at ≈ 4.08 in [16k,32k).
+- **Held-out templates** (not tabled; `pair_tables.md`): ternary's exact match is *higher* than bf16 at L ≤ 2k
+  (e.g. n=32, L=256: 0.91 vs 0.70; n=512, L=2k: 0.70 vs 0.50). bf16 seems to fit the training templates more
+  tightly. Not yet diagnosed; a first-item check would show whether this is the prompt-shortcut effect from the
+  pilot.
+- **The cap512 data costs nothing on FineWeb.** bf16 here reaches NLL 3.295 at step 1908 vs 3.298 for the pilot,
+  and n=512 is now learned (exact 0.95 at L=2k, vs 0.00 for the pilot trained on n ≤ 64).
+
+Exact match, step 1908 (per-n panels vs L, capacity at L=2k, NLL vs position < T):
+![ternary vs bf16 exact](initial_baseline_plots/ternary_vs_bf16_exact.png)
+
+Token accuracy, same layout:
+![ternary vs bf16 token acc](initial_baseline_plots/ternary_vs_bf16_token_acc.png)
+
+Training loss (FineWeb channel and selective-copy channel):
+![ternary vs bf16 train loss](initial_baseline_plots/ternary_vs_bf16_train_loss.png)
+
+Reproduce:
+```bash
+# training: --model.qat.weight ternary_twn (or none), everything else as the pilot
+torchrun --nproc_per_node 8 tasks/train_text.py configs/text/longctx/qwen3_s_T4096.yaml \
+  --model.qat.weight ternary_twn --data.train_size 1000000000 --train.checkpoint.save_steps 500 \
+  --train.checkpoint.output_dir ~/runs/longctx/qat_pair_1B/ternary
+# eval a ternary checkpoint (ternarizes the latent weights at load)
+torchrun --nproc_per_node 8 scripts/longctx/eval_longctx.py --model_path <step>/hf_ckpt --qat_weight ternary_twn \
+  --sc_test_dir ~/datasets/synthetic/selective_copy/test_cap --nll_dir ~/datasets/fineweb-edu-longctx/nll_eval_qwen3 \
+  --out_dir <run>/eval/step<N>
+python scripts/longctx/plot_longctx.py --results <bf16>/eval/step1908/results.json <ternary>/eval/step1908/results.json \
+  --labels bf16 "ternary (TWN)" --train_len 4096 --metric exact --n_copies 8 64 256 512 --capacity_len 2048 \
+  --out initial_baseline_plots/ternary_vs_bf16_exact.png
 ```
 
 ## Notes
