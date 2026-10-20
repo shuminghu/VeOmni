@@ -35,7 +35,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from transformers import initialization as init
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, CacheLayerMixin, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.masking_utils import create_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -355,6 +355,31 @@ class Qwen3HybridPreTrainedModel(PreTrainedModel):
                 init.uniform_(conv.weight, -bound, bound)
 
 
+class Qwen3HybridCache(DynamicCache):
+    """``DynamicCache`` that also knows its length without attention layers.
+
+    transformers reads the sequence length from an attention (KV) layer; an all-KDA layout has none, which breaks
+    ``generate``. This cache counts the tokens the model has fed through it and answers from that count when no
+    attention layer exists (with attention layers, the KV length as usual).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.num_seen_tokens = 0
+
+    def has_kv_layers(self) -> bool:
+        return any(isinstance(layer, CacheLayerMixin) for layer in self.layers)
+
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        if self.has_kv_layers():
+            return super().get_seq_length(layer_idx)
+        return self.num_seen_tokens
+
+    def reset(self) -> None:
+        super().reset()
+        self.num_seen_tokens = 0
+
+
 class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
     def __init__(self, config: Qwen3HybridConfig):
         super().__init__(config)
@@ -371,8 +396,15 @@ class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
         self.post_init()
 
     def _has_kv_cache(self, past_key_values: Cache | None) -> bool:
-        """Only attention layers track a sequence length; an all-KDA cache has none (positions are unused then)."""
+        """Whether the cache holds attention (KV) layers, the only ones a causal mask can be sized from."""
         return past_key_values is not None and FULL_ATTENTION in self.config.layer_types
+
+    def _past_length(self, past_key_values: Cache | None) -> int:
+        if past_key_values is None:
+            return 0
+        if self._has_kv_cache(past_key_values) or isinstance(past_key_values, Qwen3HybridCache):
+            return past_key_values.get_seq_length()
+        return 0
 
     @merge_with_config_defaults
     @capture_outputs
@@ -402,9 +434,9 @@ class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
         if use_cache and past_key_values is None:
             # One cache layer per ``layer_types`` entry: DynamicLayer (KV) for full attention, LinearAttentionLayer
             # (``config.number_of_conv_states`` conv windows + recurrent state) for KDA.
-            past_key_values = DynamicCache(config=self.config)
+            past_key_values = Qwen3HybridCache(config=self.config)
         if position_ids is None:
-            past_seen_tokens = past_key_values.get_seq_length() if self._has_kv_cache(past_key_values) else 0
+            past_seen_tokens = self._past_length(past_key_values)
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
             position_ids = position_ids.unsqueeze(0)
 
@@ -433,6 +465,8 @@ class Qwen3HybridModel(Qwen3HybridPreTrainedModel):
                 **kwargs,
             )
 
+        if use_cache and isinstance(past_key_values, Qwen3HybridCache):
+            past_key_values.num_seen_tokens += inputs_embeds.shape[1]
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states, past_key_values=past_key_values if use_cache else None
@@ -458,9 +492,26 @@ class Qwen3HybridForCausalLM(Qwen3HybridPreTrainedModel, GenerationMixin):
     # Same head and loss path as Qwen3 (fused linear cross-entropy on ``labels``).
     forward = Qwen3ForCausalLM.forward
 
+    def create_masks_for_generate(self, attention_mask=None, **kwargs):
+        """Keep ``generate``'s raw 2-D padding mask: the model builds its attention mask itself, and the KDA layers
+        need the 2-D mask. (Without this, a cache of only KDA layers is "compileable" and ``generate`` would pass a
+        per-layer-type mask dict instead.)"""
+        return attention_mask
+
+    def _prepare_cache_for_generation(self, generation_config, model_kwargs, *args, **kwargs):
+        """Hand ``generate`` a :class:`Qwen3HybridCache` instead of its default ``DynamicCache``."""
+        if (
+            model_kwargs.get("past_key_values") is None
+            and generation_config.use_cache is not False
+            and generation_config.cache_implementation in (None, "dynamic")
+        ):
+            model_kwargs["past_key_values"] = Qwen3HybridCache(config=self.config)
+        return super()._prepare_cache_for_generation(generation_config, model_kwargs, *args, **kwargs)
+
 
 __all__ = [
     "KimiDeltaAttention",
+    "Qwen3HybridCache",
     "Qwen3HybridForCausalLM",
     "Qwen3HybridModel",
     "Qwen3HybridPreTrainedModel",

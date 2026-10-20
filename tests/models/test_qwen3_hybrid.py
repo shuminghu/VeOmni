@@ -152,6 +152,13 @@ def no_tf32():
     torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = previous
 
 
+LAYOUTS = pytest.mark.parametrize(
+    "layer_types",
+    [None, ["linear_attention"] * 4],
+    ids=["hybrid", "all_kda"],
+)
+
+
 def _gpu_ops():
     return make_eager_ops_config(
         attn_implementation="sdpa",
@@ -162,11 +169,12 @@ def _gpu_ops():
 
 
 @needs_fla_gpu
-def test_packed_matches_separate_outputs_and_gradients(no_tf32):
+@LAYOUTS
+def test_packed_matches_separate_outputs_and_gradients(layer_types, no_tf32):
     """cu_seq_lens_q isolates packed samples in both the KDA layers and the (SDPA) attention layers."""
     with ops_config_scope(_gpu_ops()):
         torch.manual_seed(0)
-        config = _tiny_config()
+        config = _tiny_config(layer_types=layer_types)
         packed_model = Qwen3HybridModel(config).cuda()
         separate_model = Qwen3HybridModel(config).cuda()
         separate_model.load_state_dict(packed_model.state_dict())
@@ -229,12 +237,13 @@ def _left_padded(lengths, vocab_size, device="cuda"):
     [((5, 30, 17), 1e-5), ((3, 130, 90), 5e-3)],
     ids=["recurrent_prefill", "chunk_prefill"],
 )
-def test_cached_generate_matches_full_forward(lengths, rtol, no_tf32):
+@LAYOUTS
+def test_cached_generate_matches_full_forward(lengths, rtol, layer_types, no_tf32):
     """Greedy ``generate`` (hybrid KV + KDA conv / recurrent cache) reproduces full no-cache forwards at every step
     on a left-padded batch."""
     with ops_config_scope(_gpu_ops()):
         torch.manual_seed(0)
-        config = _tiny_config(pad_token_id=0, eos_token_id=None, bos_token_id=None)
+        config = _tiny_config(pad_token_id=0, eos_token_id=None, bos_token_id=None, layer_types=layer_types)
         assert config.use_cache  # generate inherits it: False would silently recompute the prefix every step
         model = Qwen3HybridForCausalLM(config).cuda().eval()
         input_ids, mask = _left_padded(lengths, config.vocab_size)
