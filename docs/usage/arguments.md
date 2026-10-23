@@ -102,6 +102,7 @@ live on `model.*` — see the **Model** section above.
     * `ProfileConfig` — `train.profile.*`
     * `ChannelLossConfig` — `train.channel_loss.*`
     * `LayerStatsConfig` — `train.layer_stats.*`
+    * `QATStatsConfig` — `train.qat_stats.*`
     * `CheckpointConfig` — `train.checkpoint.*`
 
 ### VLM Extensions
@@ -484,6 +485,7 @@ group or learning rate is therefore a recipe choice beyond the reference, not a 
 | profile | `ProfileConfig` | — | Torch profiler settings. |
 | channel_loss | `ChannelLossConfig` | — | Detached per-channel causal-LM loss logging. |
 | layer_stats | `LayerStatsConfig` | — | Per-decoder-layer gradient norm and activation statistics. |
+| qat_stats | `QATStatsConfig` | — | Ternary-QAT weight statistics (flip rate, zero fraction, scale). |
 | checkpoint | `CheckpointConfig` | — | Checkpoint saving and loading. |
 
 ### TorchCompileConfig
@@ -608,6 +610,22 @@ activation-checkpoint recompute. Extra-parallel (EP) gradients are not supported
 | --- | --- | --- | --- |
 | enable | `bool` | `False` | Enable per-layer stats logging. |
 | interval | `int` | `10` | Collect and log every N optimizer steps (and at step 1). |
+
+### QATStatsConfig
+
+`train.qat_stats.*` — Ternary-QAT weight statistics, for runs with `model.qat.weight: ternary_twn`.
+
+On step 1 and every `interval`-th step, logs for the ternary linears `qat/flip_rate/<group>` (fraction of ternary
+codes that changed during that step's optimizer update; codes are snapshotted at the end of the previous step),
+`qat/zero_frac/<group>` (fraction of zero codes) and `qat/alpha/<kind>` (mean per-group scale). Groups are the
+projection type without its layer index (e.g. `linear_attn.b_proj`, `mlp.down_proj`), the decoder layer
+(`layer_XX`) and `all`. Codes are computed from each rank's local shard with the forward's quantizer
+(`twn_codes`), then reduced over the FSDP group. Disabled with a warning if the model has no ternary linears.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| enable | `bool` | `False` | Enable ternary-QAT statistics. |
+| interval | `int` | `10` | Collect every N optimizer steps (≥ 2). |
 
 ### GradientCheckpointingConfig
 

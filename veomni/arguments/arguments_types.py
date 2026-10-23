@@ -60,6 +60,7 @@ def _resolve_hdfs_path(path: Optional[str]) -> Optional[str]:
 #   ├── profile.*            → ProfileConfig
 #   ├── channel_loss.*       → ChannelLossConfig
 #   ├── layer_stats.*        → LayerStatsConfig
+#   ├── qat_stats.*          → QATStatsConfig
 #   └── checkpoint.*         → CheckpointConfig
 #
 # `accelerator` and `optimizer` sit under `model`, not `train`, because both are
@@ -410,6 +411,32 @@ class LayerStatsConfig:
     def __post_init__(self):
         if self.interval < 1:
             raise ValueError(f"train.layer_stats.interval must be >= 1, got {self.interval}.")
+
+
+@dataclass
+class QATStatsConfig:
+    """train.qat_stats.* — Ternary-QAT weight statistics (model.qat.weight = ternary_twn)."""
+
+    enable: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Log, per projection type (e.g. qat/flip_rate/linear_attn.b_proj), per decoder layer and overall: the "
+                "fraction of ternary codes that change in one optimizer step (flip_rate), the fraction of zero codes "
+                "(zero_frac) and the mean per-group scale alpha (alpha; per-type only). Observability only."
+            )
+        },
+    )
+    interval: int = field(
+        default=10,
+        metadata={
+            "help": "Collect every N optimizer steps (codes are snapshotted one step earlier to measure flips)."
+        },
+    )
+
+    def __post_init__(self):
+        if self.interval < 2:
+            raise ValueError(f"train.qat_stats.interval must be >= 2, got {self.interval}.")
 
 
 @dataclass
@@ -1258,6 +1285,7 @@ class TrainingArguments:
     profile: ProfileConfig = field(default_factory=ProfileConfig)
     channel_loss: ChannelLossConfig = field(default_factory=ChannelLossConfig)
     layer_stats: LayerStatsConfig = field(default_factory=LayerStatsConfig)
+    qat_stats: QATStatsConfig = field(default_factory=QATStatsConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def __post_init__(self):
