@@ -49,12 +49,15 @@ __all__ = [
     "apply_ternary_qat",
     "ternarize_linears_",
     "ternary_fake_quant_weight",
+    "twn_codes",
     "twn_ternarize",
 ]
 
 
-def twn_ternarize(weight: torch.Tensor, group_size: int = 0, threshold: float = 0.7) -> torch.Tensor:
-    """TWN projection of ``weight`` (``[..., in]``) onto ``alpha * {-1, 0, 1}``, computed in FP32.
+def twn_codes(weight: torch.Tensor, group_size: int = 0, threshold: float = 0.7):
+    """TWN codes of ``weight`` (``[..., in]``): ``(codes, alpha)`` with ``codes`` in ``{-1, 0, 1}`` (int8, the shape of
+    ``weight``) and ``alpha`` the per-group scale (FP32, ``[n_groups, 1]``), so the projection is
+    ``codes * alpha`` (broadcast per group).
 
     Args:
         weight: Weight whose last dimension is the reduction (input) dimension, as in ``nn.Linear``.
@@ -68,10 +71,21 @@ def twn_ternarize(weight: torch.Tensor, group_size: int = 0, threshold: float = 
         if shape[-1] % group_size:
             raise ValueError(f"group_size={group_size} does not divide the input dimension {shape[-1]}.")
         w = w.reshape(-1, group_size)
+    else:
+        w = w.reshape(-1, shape[-1])
     abs_w = w.abs()
-    mask = (abs_w > threshold * abs_w.mean(-1, keepdim=True)).float()
-    alpha = (abs_w * mask).sum(-1, keepdim=True) / mask.sum(-1, keepdim=True).clamp(min=1.0)
-    return (w.sign() * mask * alpha).reshape(shape).to(weight.dtype)
+    mask = abs_w > threshold * abs_w.mean(-1, keepdim=True)
+    alpha = (abs_w * mask).sum(-1, keepdim=True) / mask.sum(-1, keepdim=True).clamp(min=1).float()
+    codes = (w.sign() * mask).to(torch.int8)
+    return codes.reshape(shape), alpha
+
+
+def twn_ternarize(weight: torch.Tensor, group_size: int = 0, threshold: float = 0.7) -> torch.Tensor:
+    """TWN projection of ``weight`` (``[..., in]``) onto ``alpha * {-1, 0, 1}``, computed in FP32 (see
+    :func:`twn_codes` for the arguments)."""
+    codes, alpha = twn_codes(weight, group_size, threshold)
+    groups = alpha.shape[0]
+    return (codes.reshape(groups, -1).float() * alpha).reshape(weight.shape).to(weight.dtype)
 
 
 def ternary_fake_quant_weight(weight: torch.Tensor, group_size: int = 0, threshold: float = 0.7) -> torch.Tensor:
