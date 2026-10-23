@@ -84,9 +84,19 @@ def add_qat_args(parser) -> None:
     )
     parser.add_argument("--qat_group_size", type=int, default=0, help="model.qat.group_size of the run.")
     parser.add_argument("--qat_threshold", type=float, default=0.7, help="model.qat.threshold of the run.")
+    parser.add_argument(
+        "--qat_exclude",
+        nargs="*",
+        default=[],
+        help="model.qat.exclude_modules of the run: module-name regexes of hidden linears trained in full precision.",
+    )
 
 
 def ternary_from_args(args) -> Optional[dict]:
     if args.qat_weight == "ternary_twn":
-        return {"group_size": args.qat_group_size, "threshold": args.qat_threshold}
+        return {
+            "group_size": args.qat_group_size,
+            "threshold": args.qat_threshold,
+            "exclude": args.qat_exclude or None,
+        }
     return None
