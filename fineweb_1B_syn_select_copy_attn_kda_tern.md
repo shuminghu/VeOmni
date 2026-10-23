@@ -39,6 +39,12 @@ Selective-copy (SC) numbers use **training templates, uniform placement** unless
   limit: exact match 0.98 at n = 8 within T, at most 0.55 at n = 64, 0 from n = 128 on (bf16). What KDA alone does keep is
   length robustness: NLL rises only 0.15 from 4k to 64k, the flattest of the three. See
   [KDA only](#kda-only-no-attention-layer).
+- **Where ternary's cost comes from (hybrid ablation).** The NLL cost splits between MLPs (0.116 nats) and
+  token mixers (0.080) and adds up (0.196 vs 0.200 fully ternary). Per parameter, the mixers cost 2× as much.
+  Keeping the small structured matrices (KDA gates, attention q/k) in bf16 recovers only ≈ 0.01. Ternary codes keep
+  flipping until the end of training (0.14% per step), and ternary MLPs prevent the large residual-stream outliers
+  bf16 builds (layer 6: max 120 vs 644). RULER differences between single runs are within run-to-run noise. See
+  [Ternary placement ablation](#ternary-placement-ablation-and-dynamics-hybrid).
 - **The hybrid is slower per token at this size,** despite 21% fewer nominal FLOPs per token: 55.3k vs 62.6k
   tokens/s per GPU (bf16) and MFU 6.8% vs 8.7%. Likely kernel overhead at this small width (448-dim KDA
   projections, 7 heads); not profiled.
@@ -389,6 +395,90 @@ At step 500 every model's 13-task average is ≤ 5.0 at every length.
 - Oddity: hybrid ternary is the only model above the floor on FWE (frequent-words extraction, 7–13% at every
   length). One seed; not investigated.
 
+## Ternary placement ablation and dynamics (hybrid)
+
+Where does the hybrid's ternary cost come from? Five more 1B-token hybrid-ternary runs keep one group of hidden
+linears in bf16 (`model.qat.exclude_modules`) and log the ternary codes' dynamics (`train.qat_stats`). All five ran
+on the same 4 GPUs (a foreign job held the other 4), so they are comparable to each other. **ref**, the fully
+ternary re-run, also measures run-to-run noise against the original 8-GPU run. Runs:
+`~/runs/longctx/ternary_ablation/{ref,gates,attn_qk,mlp_only,mixer_only}` (`run.sh`, code `ternary-diag` @
+`2c51ea96`); RULER at step 1908 only.
+
+| arm | kept in bf16 | ternary share | NLL@4k | cost vs bf16 | cost / share | SC exact > T | RULER ≤ T | RULER > T |
+|---|---|---|---|---|---|---|---|---|
+| bf16 hybrid | everything | 0% | 3.262 | – | – | 0.90 | 23.3 | 8.7 |
+| ref: all ternary | nothing | 100% | 3.462 | +0.200 | 0.200 | 0.68 | 17.5 | 6.1 |
+| all ternary (original run) | nothing | 100% | 3.463 | +0.201 | 0.201 | 0.77 | 18.7 | 6.4 |
+| A: KDA gates | f / g / β projections | 98.1% | 3.452 | +0.190 | 0.194 | 0.79 | 19.9 | 6.7 |
+| B: attention q/k | `self_attn` q, k | 96.9% | 3.448 | +0.187 | 0.193 | 0.70 | 12.4 | 8.2 |
+| C: only MLPs ternary | all token mixers | 75.3% | 3.377 | +0.116 | 0.154 | 0.66 | **28.6** | **18.0** |
+| D: only mixers ternary | all MLPs | 24.7% | 3.341 | +0.080 | 0.323 | 0.81 | 25.6 | 11.9 |
+
+SC = selective copy (train templates, uniform), mean over n_copy and L ∈ {8k, 16k, 32k}. RULER = 13-task average,
+L ≤ 4k and L ∈ {8k … 64k}. Selected RULER tasks (%, L = 1k / 2k / 4k / 8k / 16k / 32k / 64k):
+
+| arm | niah_single_1 | niah_single_2 | niah_single_3 (uuid values) |
+|---|---|---|---|
+| bf16 hybrid | 100/100/100/100/99/75/31 | 100/100/92/66/4/0/0 | 61/19/3/0/0/0/0 |
+| ref: all ternary | 100/100/100/99/89/42/4 | 97/72/5/16/7/0/0 | 1/0/0/0/0/0/0 |
+| all ternary (original run) | 100/99/97/93/80/26/5 | 86/85/55/33/4/0/0 | 4/2/2/0/0/0/0 |
+| A: KDA gates | 100/93/95/93/85/51/6 | 100/99/84/46/6/0/0 | 7/8/0/0/0/0/0 |
+| B: attention q/k | 100/99/100/100/100/98/97 | 44/35/2/1/2/0/0 | 0/0/1/0/0/0/0 |
+| C: only MLPs ternary | 100/100/100/100/100/98/90 | 100/100/100/100/96/68/4 | 66/61/49/29/0/0/0 |
+| D: only mixers ternary | 100/100/100/99/95/92/77 | 100/100/84/77/37/0/0 | 50/42/15/3/0/0/0 |
+
+![Ternary ablation summary](fineweb_1B_syn_select_copy_attn_kda_tern_plots/ternary_ablation_summary.png)
+
+**Findings**
+- **Loss is reproducible; long-range recall is not.** The re-run matches the original's NLL within 0.001 nats
+  (3.462 vs 3.463). Its RULER and long-L selective-copy scores moved a lot: niah_single_2 at 4k 5 vs 55,
+  SC exact at 32k 0.25 vs 0.45. Single-arm differences in those metrics are within noise; the NLL column is not.
+- **The NLL cost splits between MLPs and mixers and adds up.** Ternary MLPs alone cost 0.116 nats and ternary
+  mixers alone 0.080; together 0.196, against 0.200 for the fully ternary model. Per ternarized parameter, the
+  mixers are 2.1× as costly (0.323 vs 0.154 nats per unit share): the 18.6M mixer parameters carry 40% of the cost.
+- **The small, structured matrices are not the culprit.** Keeping the KDA gates (1.9% of parameters) or the
+  attention q/k (3.1%) in bf16 recovers only 0.010–0.013 nats (5–7% of the cost). The hypothesis
+  that per-row ternarization of β / the low-rank gates drives the recall loss is not supported.
+- **Recall damage looks like an interaction.** Both partial arms (C, D) recover within-T retrieval that the fully
+  ternary model loses. Their RULER averages within T are 28.6 / 25.6, against 17.5 / 18.7 for the two fully
+  ternary runs and 23.3 for bf16; uuid-value retrieval (single_3) is 66 / 50 at 1k vs 1 / 4. Keeping either half in
+  bf16 is enough, so the loss needs both MLPs and mixers ternary. That the partial arms exceed bf16 here is within
+  RULER's run-to-run noise; it needs seeds before reading anything into it.
+- Arm B is the most extreme in both directions (niah_single_1 97 at 64k, but single_2 2 at 4k). Given the noise,
+  we take nothing from it beyond the NLL.
+
+### Ternary-code dynamics
+
+![Ternary dynamics](fineweb_1B_syn_select_copy_attn_kda_tern_plots/ternary_dynamics.png)
+
+`train.qat_stats` logs, every 10 steps, the fraction of ternary codes that change in one optimizer step (flip rate),
+the zero fraction and the per-row scale α, per projection type and layer (ref run shown; the other arms match).
+- **Codes never freeze.** The flip rate peaks at 0.9% per step around step 50, then follows the Muon learning rate
+  down to 0.14% at the end. That is still ≈ 100k of the 75M ternary weights changing value every step, and roughly
+  8–9 changes per weight over training. Ternary training is still moving its codes at the end of the cosine
+  schedule; a longer schedule or a lower final LR might matter more for ternary than for bf16.
+- **The copy-task transition leaves no trace in the codes.** Between steps 340 and 380, the train SC loss falls from
+  7.4 to 0.45 nats while the flip rate declines smoothly (0.63% → 0.60%). Ternary's delayed transition (390 vs 330
+  steps for bf16 in the original pair) is not a phase of code churn.
+- **What churns most:** the KDA output-gate up-projection (`g_proj.1`, 0.36% per step at the end, 2.6× the average)
+  and attention `k_proj` (0.27%). KDA q/k change least (0.08%).
+- **Weights sparsify.** The zero fraction rises from 0.423 (the TWN value for Gaussian weights) to 0.449, most for the
+  KDA output gates (0.47): more latent weights settle below 0.7 · mean|w|.
+
+### Outlier activations
+
+![Outliers](fineweb_1B_syn_select_copy_attn_kda_tern_plots/ternary_outliers.png)
+
+`train.layer_stats` also logs max |activation| per layer (the residual stream after each decoder layer).
+- **bf16 builds residual-stream outliers; ternary does not.** In the bf16 hybrid, layer 6's max |activation| grows
+  through training to 644, 66× its RMS, and stays at 480–820 in later layers. In both fully ternary runs it plateaus
+  at ≈ 120 (13× RMS), with similar RMS; arms A and B, with 97–98% of the weights ternary, end at 121 and 181.
+- **The outliers come from the MLPs.** Arm D (MLPs bf16, mixers ternary) brings them back (430 at layer 6); arm C
+  (mixers bf16, MLPs ternary) does not (146). This matches the known picture of "massive activations" produced by
+  MLP weights. Ternary MLP weights cannot form them.
+- Implication: ternary models have far smaller activation outliers. That should make activation quantization (the
+  W1.58A8 setting actual ternary deployment uses) easier for them than for bf16 models. Untested here.
+
 ## Caveats
 - One seed per arm and a single 1B-token budget at 75M non-embedding parameters.
 - The Qwen3-S pair ran at commit `6bd6eeaf` (offline wandb, no per-layer stats); the hybrid pair at `fd8aaa07` /
@@ -429,7 +519,22 @@ python scripts/longctx/plot_compare_runs.py --out_dir fineweb_1B_syn_select_copy
 ```
 The whole hybrid pair (both arms, merges, evals) is `~/runs/longctx/hybrid_pair_1B/run.sh` followed by `run2.sh`;
 the KDA-only pair, including RULER, is `~/runs/longctx/kda_pair_1B/run.sh` (`NPROC` / `CUDA_VISIBLE_DEVICES` select
-the GPUs). The throughput benchmark is `~/runs/longctx/throughput_bench/run.sh`.
+the GPUs). The throughput benchmark is `~/runs/longctx/throughput_bench/run.sh`; the ternary placement ablation (5 arms,
+evals, RULER) is `~/runs/longctx/ternary_ablation/run.sh`, plotted with:
+```bash
+R=~/runs/longctx/ruler; A=~/runs/longctx/ternary_ablation
+python scripts/longctx/plot_ternary_ablation.py --out_dir fineweb_1B_syn_select_copy_attn_kda_tern_plots \
+  --bf16 "bf16" --dynamics "all ternary (ref)" \
+  --arm "bf16" ~/runs/longctx/hybrid_pair_1B/bf16 $R/hyb_bf16_s1908/results.json 0 \
+  --arm "all ternary (ref)" $A/ref $R/tabl_ref_s1908/results.json 1 \
+  --arm "all ternary (orig, 8 GPU)" ~/runs/longctx/hybrid_pair_1B/ternary $R/hyb_ternary_s1908/results.json 1 \
+  --arm "A: KDA gates bf16" $A/gates $R/tabl_gates_s1908/results.json 0.981 \
+  --arm "B: attention q/k bf16" $A/attn_qk $R/tabl_attn_qk_s1908/results.json 0.969 \
+  --arm "C: only MLPs ternary" $A/mlp_only $R/tabl_mlp_only_s1908/results.json 0.753 \
+  --arm "D: only mixers ternary" $A/mixer_only $R/tabl_mixer_only_s1908/results.json 0.247
+```
+Partially ternary runs must be evaluated with the same exclusions:
+`eval_longctx.py / eval_ruler.py --qat_weight ternary_twn --qat_exclude '<regex>' ...`.
 RULER (same prompts and command as the Qwen3-S runs; `~/runs/longctx/ruler/run_ruler_hybrid.sh` for all 8 hybrid
 checkpoints):
 ```bash
